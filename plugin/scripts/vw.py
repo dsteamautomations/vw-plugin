@@ -951,6 +951,21 @@ def cmd_motion(a):
         out = write(base + '/motion/colour', {'thing': a.thing, 'colour': a.colour, 'words': a.words, 'reason': a.reason,
                                               'shots': [s.strip() for s in a.shot.split(',') if s.strip()], 'quote': a.quote or ''})
         emit(out, 0, out.get('next'))
+    if a.what == 'parts':   # design/221 row 1: the film's shared parts, drawn once by one vw-motion-parts helper and approved in the chat
+        if a.file:
+            p = (ws / a.file) if (ws / a.file).is_file() else Path(a.file)
+            if not p.is_file():
+                emit({'action': 'refused', 'message': f'No file {a.file}: the parts are work/motion/parts/parts.svg.'}, 2)
+            out = write(base + '/motion/parts', {'name': p.name, 'content_base64': _b64.b64encode(p.read_bytes()).decode('ascii')})
+            emit(out, 0, out.get('next'))
+        out = call('GET', f'{base}/motion/parts')
+        pf = ws / 'work' / 'motion' / 'parts'
+        pf.mkdir(parents=True, exist_ok=True)
+        (pf / 'brief.md').write_text(out['brief'], encoding='utf-8')
+        refs = [_download(m, f"{m['run_id']}/visuals/references/{rid}.png", f'work/motion/parts/refs/{rid}.png') for rid in out.get('refs') or []]
+        emit({'brief': str(pf / 'brief.md'), 'refs': refs, **({'rejected': out['rejected']} if out.get('rejected') else {})}, 0,
+             f"The parts brief is in work/motion/parts/brief.md with {len(refs)} pictures in refs/: start one vw-motion-parts helper; it writes work/motion/parts/parts.svg, "
+             'then upload it with `vw motion parts --file work/motion/parts/parts.svg`.' + (f' The operator rejected the last parts: "{out["rejected"]}": give the helper these words.' if out.get('rejected') else ''))
     if not a.shot:
         emit({'action': 'refused', 'message': f'Give the drawn shot: `vw motion {a.what} --shot S`.'}, 2)
     folder = ws / 'work' / 'motion' / a.shot
@@ -959,19 +974,40 @@ def cmd_motion(a):
         out = call('GET', f'{base}/motion/brief/{a.shot}')
         (folder / 'project').mkdir(parents=True, exist_ok=True)
         (folder / 'brief.md').write_text(out['brief'], encoding='utf-8')
-        refs = [_download(m, f"{m['run_id']}/visuals/references/{rid}.png", f'work/motion/{a.shot}/refs/{rid}.png') for rid in out.get('refs') or []]
-        emit({'shot_id': a.shot, 'brief': str(folder / 'brief.md'), 'refs': refs, 'project': str(folder / 'project')}, 0,
-             f"Brief for {a.shot} written to work/motion/{a.shot}/brief.md with {len(refs)} pictures in refs/: start vw-motion-rules for {a.shot}, then vw-motion-shot.")   # design/134 14
+        save_json(folder / 'brief-lines.json', out.get('lines') or {})   # design/221 (the critic's A1): the brief the rules are written from, sent with the upload
+        refs =[_download(m, f"{m['run_id']}/visuals/references/{rid}.png", f'work/motion/{a.shot}/refs/{rid}.png') for rid in out.get('refs') or []]
+        if out.get('parts_key'):   # design/221 row 1: the film's approved shared parts beside the brief, for the builder to read and preview
+            _download(m, out['parts_key'], f'work/motion/{a.shot}/parts.svg')
+        line, c = '', out.get('continues')
+        if c:   # design/221 row 2: the earlier drawing's passed project and its last frame, beside the brief
+            import zipfile
+            base_ = folder / f"from-{c['shot_id']}"
+            shutil.rmtree(base_, ignore_errors=True)
+            with zipfile.ZipFile(_download(m, c['project_key'], f'work/motion/{a.shot}/from-{c["shot_id"]}.zip')) as z:
+                for n in z.namelist():
+                    if not n.endswith('/') and '..' not in Path(n).parts and not Path(n).is_absolute():
+                        (base_ / n).parent.mkdir(parents=True, exist_ok=True)
+                        (base_ / n).write_bytes(z.read(n))
+            if c.get('last_frame_key'):
+                _download(m, c['last_frame_key'], f'work/motion/{a.shot}/from-{c["shot_id"]}/last-frame.png')
+                line = f" {c['shot_id']}'s passed project and its last frame are in work/motion/{a.shot}/from-{c['shot_id']}/ (last-frame.png)."
+            else:
+                line = (f" {c['shot_id']}'s passed project is in work/motion/{a.shot}/from-{c['shot_id']}/; its last frame is not taken yet: run "
+                        f"`vw motion snapshot --shot {c['shot_id']} --at {c['last_second']:g}` and copy the PNG to work/motion/{a.shot}/from-{c['shot_id']}/last-frame.png.")
+        emit({'shot_id': a.shot, 'brief': str(folder / 'brief.md'), 'refs': refs, 'project': str(folder / 'project'), **({'continues': c} if c else {})}, 0,
+             f"Brief for {a.shot} written to work/motion/{a.shot}/brief.md with {len(refs)} pictures in refs/: start vw-motion-rules for {a.shot}, then vw-motion-shot." + line)   # design/134 14
     if a.what == 'upload':
         proj = (ws / a.dir) if a.dir and (ws / a.dir).is_dir() else (Path(a.dir) if a.dir else folder / 'project')
         if not (proj / 'index.html').is_file():
             emit({'action': 'refused', 'message': f'No index.html in {proj}: the project is work/motion/{a.shot}/project/ with index.html at its root.'}, 2)
         rules = folder / 'rules.md'   # design/217 (C6): the server holds the shot's rules with the project; the fact check answers every one of them
         out = write(base + '/motion/upload', {'shot_id': a.shot, 'name': f'{a.shot}.zip', 'content_base64': _b64.b64encode(motion_zip(proj)).decode('ascii'),
-                                              **({'rules': rules.read_text(encoding='utf-8')} if rules.is_file() else {})})
+                                              **({'rules': rules.read_text(encoding='utf-8')} if rules.is_file() else {}),
+                                              **({'brief_lines': load_json(folder / 'brief-lines.json')} if load_json(folder / 'brief-lines.json') else {}),
+                                              **({'still': True} if getattr(a, 'still', False) else {})})   # design/221 row 3: the still end-frame, before the motion
         if (load_json(last) or {}).get('sha256') != out['sha256']:   # design/134 5: a corrected project's checker sees only its own snapshots
             shutil.rmtree(folder / 'snapshots', ignore_errors=True)
-        save_json(last, {'sha256': out['sha256'], 'at': datetime.now(timezone.utc).isoformat()})
+        save_json(last, {'sha256': out['sha256'], 'at': datetime.now(timezone.utc).isoformat(), **({'still': True} if getattr(a, 'still', False) else {})})   # the checker reads whether it judges a still
         emit(out, 0, out.get('next'))
     if a.what in ('check', 'snapshot'):
         sha = a.sha or (json.loads(last.read_text(encoding='utf-8')).get('sha256') if last.is_file() else '')
@@ -1005,6 +1041,7 @@ def cmd_motion(a):
             errs = res.get('errors') or []
             line = (f"Check clean ({len(res.get('warnings') or [])} warnings) for {sha[:12]}." if out.get('status') == 'ready' and not errs
                     else f"Check found {len(errs)} errors (work/motion/{a.shot}/check.json): fix each, upload, check again." if out.get('status') == 'ready' else f"Check failed: {out.get('error')}")
+            line += ''.join(' ' + m for m in res.get('label_musts') or [])   # design/221 row 17: a label of this shot only, on screen too short, is a must
         emit({'job_id': job['job_id'], 'sha256': sha, 'status': out.get('status'), 'error': out.get('error'), **res}, 0 if out.get('status') == 'ready' else 2, line)
     if a.what == 'verdict':   # design/130 §4 step 5: the fact checker's check-<round>.json, kept with the run
         p = (ws / a.file) if a.file and (ws / a.file).is_file() else Path(a.file or '')
@@ -2370,8 +2407,10 @@ def cmd_visuals(a):
             card['card_file'], card['answers_path'] = str(folder / f"{card['id']}.html"), str(folder / f"{card['id']}.answers.json")   # full paths, for reading and writing; the command takes `answers_file`
             return (f"{card['step']}: {card['entries']} entries on one card ({card['id']}). Say: \"{card['say_before']}\" Card file: {card['card_file']}. "
                     f"Write the answers to: {card['answers_path']}. Then: vw visuals card --file {card['answers_file']}. " + out['how'])
-        if not item:
-            return ' '.join(out.get('working') or []) + (' ' if out.get('working') else '') + out.get('say_last', '')
+        if not item:   # design/221 row 18: a finished drawn graphic to show, with its one line, asking nothing
+            shows = [(_download(m, f['key'], f"work/chat/{re.sub(r'[^A-Za-z0-9._-]', '-', f['name'])}"), f.get('say') or '') for f in out.get('show') or []]
+            return ((f"Show these files, each with its line, and ask nothing: {'; '.join(p + ': ' + s for p, s in shows)}. " if shows else '')
+                    + ' '.join(out.get('working') or []) + (' ' if out.get('working') else '') + out.get('say_last', ''))
         (ws / 'work' / 'chat').mkdir(parents=True, exist_ok=True)
         paths = [_download(m, f['key'], f"work/chat/{re.sub(r'[^A-Za-z0-9._-]', '-', f['name'])}") for f in item.get('show') or []]   # the pictures and takes to show
         item['show_files'] = paths
@@ -2499,10 +2538,14 @@ def cmd_visuals(a):
                      done + f"{len(own_fetch)} picture(s) the operator added on the page are still to fetch. For each id, the Artifact tool: action \"read\", `url` {link or 'the page link'}, "
                             f"`path` the id, `out_dir` {folder / 'own'}. The ids: " + ', '.join(f'`path` {i}' for i in own_fetch) + '. Then run `vw visuals page --record` again: their lines '
                             'are recorded then. Nothing is recorded for those lines yet.')
+            if out['page'].get('closed'):   # design/221 row 18: step 6 is still being made: nothing is written to the page
+                emit({k: out[k] for k in ('recorded', 'kept', 'stale', 'refused', 'dropped', 'then') if k in out}, 0, done + out['then'] + ' ' + out['page']['how'])
             info = hand(out['page'], {k: out[k] for k in ('recorded', 'kept', 'stale', 'refused', 'dropped', 'then') if k in out}, said=done + (out.get('then') or '') + ' ')
             emit(info, 0, done + f"{out['then']} " + (REPUBLISH if info.get('republish') else '') + pictures_line(info) + f"New round {info['round']}: write it to the page (step 3 of `how`): {info['round_file']}.")
         out = write(base + '/page', {'one': False}, wait=PAGE_WAIT)
-        info = hand(out, {'then': out['then']} if out.get('then') else None)   # design/210 part 2: what the assistant does when nothing waits on the page (start the round; wait for the sets)
+        if out.get('closed'):   # design/221 row 18: the answer is the line of counts, not a page; nothing is published or written
+            emit({'closed': True, 'say': out.get('say') or '', 'then': out['then']}, 0, out['then'] + ' ' + out['how'])
+        info = hand(out,{'then': out['then']} if out.get('then') else None)   # design/210 part 2: what the assistant does when nothing waits on the page (start the round; wait for the sets)
         emit(info, 0, f"{out.get('step') or 'Decisions'} page: {info['waiting']} line(s) to answer. {info['note']} " + (out['then'] + ' ' if out.get('then') else '')
                       + ('Publish the page first (step 1 of `how`). ' if not info['url'] else f"Page: {info['url']}. ")
                       + (REPUBLISH if info.get('republish') else '') + pictures_line(info) + f"Round {info['round']}: {info['round_file']}. " + out['how'])
@@ -2911,7 +2954,8 @@ def cmd_visuals(a):
         waiting_line = (f"; {len(wt)} waiting for the operator: " + (f'all {on_page}' if paged == len(wt) else (f'{paged} of them are {on_page}; ' if paged else '')
                         + f"ask {'the others' if paged else 'them'} one at a time with `vw visuals next` (design/188), never from this list")) if wt else ''
         due_line = f"; {st['round_due']}" if st.get('round_due') else ''   # design/151 hotfix: a kept film's round is next, said before the waiting specs
-        emit(_short_status(st, a.shot, a.gap), 0, 'Visuals: ' + line + round_line + due_line + waiting_line + '; one line per job above, the whole status in work/visuals/status.json')
+        six = (f"; step 6 (say this to the operator each time it changes, as it is, and ask nothing with it): {st['step6']}" if st.get('step6') else '')   # design/221 row 18
+        emit(_short_status(st, a.shot, a.gap), 0, 'Visuals: ' + line + round_line + due_line + waiting_line + six + '; one line per job above, the whole status in work/visuals/status.json')
     if a.what == 'fetch':
         if a.ref:
             st = call('GET', base)
@@ -3665,7 +3709,7 @@ def cmd_pull(a):
     emit({**full, 'next': nxt, 'resolve': found, 'workspace': str(workspace(a.code))}, 0, pull_line(a.code, nxt, found))
 
 
-TEXT_STAGES = ('intake', 'brief', 'script')
+TEXT_STAGES = ('intake', 'brief', 'script', 'visuals')   # design/221 row 22: the visuals stage too, so the operator's answers there are logged as theirs
 
 
 def cmd_log(a):
@@ -3869,11 +3913,12 @@ def build_parser():
     s.add_argument('--gaps', nargs='*'); s.add_argument('--refs', nargs='*'); s.add_argument('--shots', nargs='*'); s.add_argument('--note', nargs='*', help='pick: N="note" per picked picture (design/73)'); s.add_argument('--wait', type=int, default=0)
     s.add_argument('--selector', action='append')
     s.add_argument('--subject', '--subject-rec', dest='subject', action='append'); s.set_defaults(fn=cmd_visuals)   # ticket 10: one definition, repeatable
-    s = sub.add_parser('motion'); s.add_argument('what', choices=['brief', 'upload', 'check', 'snapshot', 'verdict', 'render', 'status', 'rule', 'finish', 'colour', 'note'])   # design/130; design/186: finish
+    s = sub.add_parser('motion'); s.add_argument('what', choices=['brief', 'upload', 'check', 'snapshot', 'verdict', 'render', 'status', 'rule', 'finish', 'colour', 'note', 'parts'])   # design/130; design/186: finish; design/221 row 1: parts
     for flag in ('--shot', '--dir', '--sha', '--at', '--zoom', '--job', '--file', '--subject', '--add', '--quote', '--thing', '--colour', '--words', '--reason', '--text', '--remove'):   # design/218: four for colour; design/218b: --text and --remove for note
         s.add_argument(flag)
     s.add_argument('--crop', action='append', help='snapshot: a close-up left,top,width,height as fractions of the frame; repeatable')
     s.add_argument('--off', action='store_true', help="finish: take the drawing's finish away (design/186)"); s.add_argument('--on', action='store_true', help='finish: put it back')
+    s.add_argument('--still', action='store_true', help='upload: the still end-frame, the picture at the end of the shot with no motion, approved before the motion (design/221 row 3)')
     s.set_defaults(fn=cmd_motion)
     s = sub.add_parser('guide'); s.add_argument('what', choices=['scene', 'status', 'frames', 'verdict', 'drawing', 'drawing-approve', 'drawing-reject', 'still', 'look', 'repair', 'approve', 'reject', 'prompt', 'shoot', 'cause'])   # integration steps B to E
     for flag in ('--shot', '--file', '--override', '--still', '--sha', '--quote', '--notes', '--region', '--prompt', '--fix'):
