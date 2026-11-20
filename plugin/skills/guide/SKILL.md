@@ -14,10 +14,10 @@ You write data and words. You never run Blender, never call a picture or video m
 | Step | Command | Paid? |
 |---|---|---|
 | 1. Scene description | a `vw-guide-scene` helper writes `work/guide/<shot>/scene.json`; `vw guide scene --shot S --file …` | free |
-| 1b. The shot's drawing | the server draws the shot from the scene: through the camera and from above, each person with front, back and working arm marked. The operator approves it in the chat (`vw visuals next`), or `vw guide drawing --shot S` then `vw guide drawing-approve --shot S --sha … --quote "<their words>"`. No still before their Yes. | free |
+| 1b. The shot's drawing | the server draws the shot from the scene: through the camera and from above, each person with front, back and working arm marked. Only after a fresh checker has passed the layout (row 3: the checkers of all the layouts are started together, in one message, before any layout card is shown), the operator approves it in the chat (`vw visuals next`), or `vw guide drawing --shot S` then `vw guide drawing-approve --shot S --sha … --quote "<their words>"`. No still before their Yes. | free |
 | 2. Check frames | `vw guide frames --shot S` (three frames and a strip arrive in `work/guide/<shot>/frames/`) | free |
 | 3. The double check | a fresh `vw-guide-check` helper, who has not seen the build, writes `verdict.json`; `vw guide verdict --shot S --file …` | free |
-| 4. The guide is rendered | by the server, after a passing verdict; `vw guide status --shot S` | free, several minutes |
+| 4. The guide is rendered | by the server, after a passing verdict: its first frame first (under a minute), its video behind it (several minutes; needed only for the take, row 8). Order the still (row 5) as soon as the first frame is ready; `vw guide status --shot S` says which is ready | free |
 | 5. The still | `vw guide still --shot S --file still.json`; then `vw guide look --shot S` | paid (one picture) |
 | 6. The overlay | the operator looks at the overlay and approves the exact file, or it is repaired or rejected | free |
 | 7. The take's words | `vw guide prompt --shot S --file take.txt` | free |
@@ -25,7 +25,7 @@ You write data and words. You never run Blender, never call a picture or video m
 | 9. Claude's check | `vw visuals pictures --looks`: a `vw-take-look` helper judges the take from its frames (one every half second, the sheet at four a second, the still); the server measures real footage, the length, the first frame and one continuous shot | free |
 | 10. Review | on the page (`vw visuals page`), all takes together, once every take is made and checked: Select, Make another, or Reject. Until then say step 7's line of counts as it is and ask nothing | free |
 
-One helper builds one shot. The checker is always a different, fresh helper. After two failed rounds, show the operator what is still open before another round.
+One helper builds one shot. The checker is always a different, fresh helper. A scene gets one verdict. After the third failed check in a row the server holds the shot and asks the operator in the chat (`vw visuals next`): build nothing more for it until they answer.
 
 ## Any kind of shot may be an AI video
 
@@ -154,7 +154,7 @@ Steps, seats, bending and door arcs; an arm passing through a thing; one thing h
 - `parents`: only approved pictures, each with its job. For the first still of a scene: the people's full-length and face pictures and each prop's picture, cropped to the thing. For later stills of the same scene: crops of the scene's first approved still. Never a whole photo taken from another camera position; never a person's working-pose picture.
 - A describes-what-it-looks-like word beats a trade name. A "not a …" phrase goes in only after that fault has been seen.
 
-After `vw guide look`, show the operator the overlay and say what to look for: every person and thing sits on the red outlines. Then: approve the exact file; or repair one wrong part (`vw guide repair --still ID --region left,top,width,height --prompt "what is wrong; what it becomes"`); or reject it with the reason. A fault in the guide itself is fixed in the scene, never in words.
+After `vw guide look`, show the operator the overlay and say what to look for: every person and thing sits on the red outlines. Claude checks the still first: `vw visuals pictures --looks` lists it (kind `start`) with its lines; its card comes with the check, or after 30 minutes as not checked. Then: approve the exact file; or repair one wrong part (`vw guide repair --still ID --region left,top,width,height --prompt "what is wrong; what it becomes"`); or reject it with the reason. A fault in the guide itself is fixed in the scene, never in words.
 
 ## The take's words
 
@@ -190,14 +190,14 @@ These rules are for every shot with a person, of any kind. The server refuses a 
 3. **Head and body agree.** Give `"watches": [x, y, z]` on a person who watches something: it must lie within 45 degrees of the way the body faces.
 4. **Right side to the camera.** A person who faces left has the right side away from the camera, so the working hand is hidden. A person who works with the right hand faces right, or the camera stands over the right shoulder.
 5. **The layout gives way, not the body.** Where the plan's layout makes the job impossible to stage, move the person, the thing or the camera by the least that makes it possible; mirror the layout if that is what it takes. The plan's meaning stays (who does what to what); its left and right may change.
-6. **Say every such change.** List it in the scene: `"changed_from_plan": ["The plan had the man at the right of the machine; he stands at its left, facing right, so his right hand is toward the camera."]`. The operator sees these lines with the shot's drawing.
+6. **Say every such change.** List it in the scene: `"changed_from_plan": ["The plan had the man at the right of the machine; he stands at its left, facing right, so his right hand is toward the camera."]`. The operator sees these lines with the shot's drawing. Its exact form: a list of at most ten strings, each one plain sentence of at most 300 characters, never an object; `"changed_from_plan": []` when nothing changed.
 
 ## The shot's drawing
 
 When the scene is accepted, the server draws it from the same numbers as the guide (free): through the film's camera and from above. Every person is drawn with a pale face and chest with dark marks, a purple back and an orange right arm, so the operator and the picture AI can both see which way each person faces and which arm works.
 
 - A piece of the set or a prop that is a thing with an approved drawing set (the `vw:drawing` skill) carries `"drawn_as": "<element id>"`, and `"turn": <degrees>` when it is turned. It is then drawn as the thing's own model, standing where its box stands. Make the box the thing's real size: the server says when the two disagree.
-- The operator approves the drawing before the still. A correction changes the scene, and the new scene is drawn and approved again.
+- The operator sees the drawing only once a fresh checker has passed the layout, and approves it before the still. A correction changes the scene, and the new scene is drawn, checked and approved again.
 - The still's request then carries the two drawings after the guide's first frame, with the words that explain them. You do not send them and you do not describe them: write the still's words as before.
 - When an approved still looks drawn rather than photographed, make it again with a look reference: `"look": "<the id of an approved picture of this film>"` in the still's file. Only its surface, light and colour are taken.
 

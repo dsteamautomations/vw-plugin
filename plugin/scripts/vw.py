@@ -546,6 +546,8 @@ def finish(payload, code):
     if code == 3:
         emit(payload, 3, 'The server needs the operator to decide: ' + ', '.join(payload.get('options', [])))
     if isinstance(payload, dict) and payload.get('code') == 'DEFECT_OPEN':   # design/48 O.2
+        if payload.get('holds'):   # release 3, C6: the server says what the defect holds (one shot, or a step) and what goes on
+            emit(payload, 2, str(payload.get('message') or ''))
         emit(payload, 2, f"A defect is open on this run ({payload.get('defect')}); the builder is on it. Nothing more can be recorded until it is fixed. "
                          'Do not send this call again now: tell the operator, and send it once the builder says the defect is fixed.')   # fix set M6: the refusal ends with the next step
     emit(payload, code)
@@ -676,7 +678,9 @@ def next_line(nxt):
         return 'All stages done; close the run.'
     line = f"Next: {nxt['stage']}." + (f" This step uses a paid provider ({nxt['paid']}); tell the operator, do not ask." if nxt.get('paid') else '')
     if nxt.get('open_defects'):   # design/48 O.2
-        line += ' · ' + ', '.join(f'defect {d} open' for d in nxt['open_defects'])
+        held = {h['defect']: f" (holds shot {h['shot']} only)" if h.get('shot') else f" (holds the {h['stage']} step)" if h.get('stage') else ' (holds every step)'
+                for h in nxt.get('held') or []}   # release 3, C6; an older server sends no `held`
+        line += ' · ' + ', '.join(f'defect {d} open' + held.get(d, '') for d in nxt['open_defects'])
     page = nxt.get('voice_page')
     if page:   # design/52 B: what the voices page holds
         bits = [f"picked {page['pick'].get('name') or page['pick'].get('voice_id')} on the voices page" if page.get('pick') else 'nothing picked on the voices page',
@@ -945,7 +949,7 @@ def cmd_motion(a):
     if a.what == 'status':
         if not a.job:
             emit({'action': 'refused', 'message': 'Give the job: `vw motion status --job J`.'}, 2)
-        emit(call('GET', f'{base}/motion/jobs/{a.job}'), 0)
+        emit(motion_wait(base, a.job) if getattr(a, 'wait', False) else call('GET', f'{base}/motion/jobs/{a.job}'), 0)   # release 3, E2: --wait waits here for that job
     if a.what == 'rule':   # design/130 §4 step 8: a correction kept for every later film on the subject, with the operator's words
         if not (a.subject and a.add and a.quote):
             emit({'action': 'refused', 'message': 'Give the subject, the rule and the operator\'s words: `vw motion rule --subject rat-trap-bond --add "…" --quote "<their yes>"`.'}, 2)
@@ -1090,6 +1094,12 @@ def cmd_motion(a):
         emit(out, 0, out.get('next'))
     if a.what == 'render':
         out = write(base + '/motion/render', {'shot_id': a.shot})
+        if getattr(a, 'wait', False) and out.get('job_id') and not out.get('cached'):   # release 3, E2: one call that returns when the render is ready, as the check and the snapshot do
+            job = motion_wait(base, out['job_id'])
+            done = job.get('status') == 'ready'
+            emit({**out, 'status': job.get('status'), 'error': job.get('error')}, 0 if done or job.get('status') in ('queued', 'running') else 2,
+                 f"The render of {a.shot} is ready (job {out['job_id']})." if done else f"The render of {a.shot} {'failed' if job.get('status') == 'failed' else 'is ' + str(job.get('status'))} (job {out['job_id']})"
+                 + (f": {job['error']}" if job.get('error') else f": still being made after {MOTION_WAIT_S // 60} minutes; `vw motion status --job {out['job_id']} --wait`."))
         emit(out, 0, ' '.join(x for x in (out.get('next'), ('Tell the operator: ' + out['tell_the_operator']) if out.get('tell_the_operator') else '') if x))
     if a.what == 'finish':   # design/186: the operator's word takes a drawing's finish away, or puts it back; the same server function as the page's button
         if not a.shot or a.off == a.on:
@@ -1262,8 +1272,15 @@ def cmd_defect(a):
             log = path.read_text(encoding='utf-8', errors='replace')[-4000:]
         except OSError:
             pass
-    emit(write(f"/api/runs/{m['run_id']}/defects", {'stage': a.stage, 'error': a.error, 'log_excerpt': log}), 0,
-         'Defect filed. Tell the operator the ticket number and stop; the builder takes it from here.')
+    out = write(f"/api/runs/{m['run_id']}/defects", {'stage': a.stage, 'error': a.error, 'log_excerpt': log, **({'shot': a.shot} if getattr(a, 'shot', None) else {})})
+    holds = out.get('holds') or {}   # release 3, C6: what the server holds for it; an older server says nothing
+    emit(out, 0, f"Defect filed. It holds shot {holds['shot']} only: go on with everything else. Tell the operator the ticket number; the builder takes that shot from here." if holds.get('shot')
+         else f"Defect filed. It holds the {holds['stage']} step: tell the operator the ticket number and stop; the builder takes it from here." if holds.get('stage')
+         else 'Defect filed. Tell the operator the ticket number and stop; the builder takes it from here.')
+
+
+DEFECT_HELP = ('File a defect for the builder. Name the shot it is about (--shot S): the server then holds only that shot and the rest of the run '
+               'goes on. With no shot the defect holds the whole step (--stage, else the step the run is in).')
 
 
 def favourites():
@@ -2132,7 +2149,7 @@ _PLACE = {'file', 'element', 'name', 'clip', 'at', 'url', 'quote'}
 _REUSE = {'reuse', 'considered', 'crop'}
 VISUALS_FLAGS = {
     'digest': set(), 'trial': {'file', 'element', 'clip', 'at'}, 'look': {'file'},   # design/211 part A: the digest of the footage, trial frames, the looks
-    'prepare': set(), 'budget': set(), 'cap': {'inr', 'quote'}, 'elements': set(), 'feedback': set(), 'check': {'file'}, 'propose': {'file'}, 'plan': set(), 'treatment': {'file', 'quote', 'accept', 'send_back', 'notes'}, 'plan-join': {'base', 'gaps', 'rebuild'},
+    'prepare': set(), 'budget': set(), 'cap': {'inr', 'quote'}, 'elements': set(), 'feedback': set(), 'check': {'file'}, 'propose': {'file', 'answers'}, 'plan': set(), 'treatment': {'file', 'quote', 'accept', 'send_back', 'notes'}, 'plan-join': {'base', 'gaps', 'rebuild'},
     'select': {'gap', 'choice', 'job', 'notes', 'timing', 'quote', 'in_s'}, 'accept': {'gaps', 'quote'}, 'next': {'one'}, 'decide': {'item', 'choice', 'quote', 'notes', 'one'}, 'card': {'file', 'one'}, 'page': {'url', 'record', 'uploaded', 'pictures_again'}, 'revise': {'gap', 'notes', 'quote'}, 'record': {'gap', 'gaps', 'quote'},
     'round': {'file', 'verdicts', 'picks', 'sets', 'quote', 'undo', 'answer', 'verdict', 'golden', 'words', 'make', 'aside', 'back', 'rest', 'rewrite', 'looks', 'things'},   # design/177: the page's step-2 actions; design/211 part B: the second go, the rewrite, the looks at the sets
     'search': {'element', 'keywords', 'quote', 'source'}, 'ask': {'item', 'question', 'choices', 'cost'}, 'answer': {'item', 'answer'}, 'not-this': {'element'}, 'pick': {'search', 'n', 'note', 'quote'}, 'nothing-fits': {'search', 'reason'},
@@ -2393,7 +2410,7 @@ def cmd_visuals(a):
         out = write(base + '/footage', {'camera': a.camera, 'support': a.support, 'look': a.look, 'quote': a.quote})
         emit(out, 0, f"Corrected with the operator's words. {out.get('line')}")
     if a.what in ('check', 'propose'):
-        out = write(base + '/' + a.what, {'plan': _json_file(m, a.file)})
+        out = write(base + '/' + a.what, {'plan': _json_file(m, a.file), **({'answers': a.answers} if a.what == 'propose' and getattr(a, 'answers', None) else {})})   # release 3, C2: the question whose answer this plan follows
         line = f"{a.what}: {out.get('status', 'saved')}"
         r = out.get('routes') or {}
         if r:   # design/65 C2: the routes, the images and the cost against the cap
@@ -2408,6 +2425,16 @@ def cmd_visuals(a):
         if out.get('warnings'):
             open_ = sum(1 for w in out['warnings'] if not w.get('answered'))
             line += f"; {len(out['warnings'])} warning(s), {open_} unanswered: answer each in its shot's warning_answers (kind and answer), never in the purpose"
+        absent = [w.get('shot_id') or '' for w in out.get('warnings') or [] if w.get('kind') == 'supplied_missing' and not w.get('answered')]
+        if absent:   # release 3, C3: the server names the missing file; only this computer sees the run folder
+            there = sorted(f.name for f in (ws / 'in' / 'brand').glob('*') if f.is_file()) if (ws / 'in' / 'brand').is_dir() else []
+            line += (f"; A logo or brand file is not given yet ({', '.join(absent)}). in/brand/ of the run folder " +
+                     (f"holds {', '.join(there)}: give the right one with `vw visuals supply --element E --file in/brand/<name>`, or ask the operator for the file now" if there
+                      else f"is empty: run `vw brand fetch`, or ask the operator now to put the file in {ws / 'in' / 'brand'}, then `vw visuals supply --element E --file in/brand/<name>`")
+                     + '; this is a warning, the plan is not held')
+        for k, lead in (('kept_without_asking', 'Kept without asking the operator'), ('asked_again', 'Asked again')):   # release 3, C1 and C2
+            if out.get(k):
+                line += f"; {lead}: {'; '.join(out[k])}."
         if out.get('shared_change'):   # design/191: one question for every gap whose own shots are unchanged
             line += '; ' + out['shared_change']
         if a.what == 'propose' and out.get('status') != 'rejected' and a.file and (ws / a.file).resolve() == (ws / 'out' / 'visual-plan.json').resolve():
@@ -2477,6 +2504,14 @@ def cmd_visuals(a):
             card['card_file'], card['answers_path'] = str(folder / f"{card['id']}.html"), str(folder / f"{card['id']}.answers.json")   # full paths, for reading and writing; the command takes `answers_file`
             return (first + f"{card['step']}: {card['entries']} entries on one card ({card['id']}). Say: \"{card['say_before']}\" Card file: {card['card_file']}. "
                     f"Write the answers to: {card['answers_path']}. Then: vw visuals card --file {card['answers_file']}. " + out['how'])
+        group = out.get('group')
+        if group:   # release 2, B4 and B4b: several end-frames, or layout drawings, ready together: one message, one question for each
+            (ws / 'work' / 'chat').mkdir(parents=True, exist_ok=True)
+            for e in group['items']:
+                e['show_files'] = [_download(m, f['key'], f"work/chat/{re.sub(r'[^A-Za-z0-9._-]', '-', f['name'])}") for f in e.get('show') or []]
+            return (first + f"{group['heading']} Show them side by side in one message and ask one question for each: "
+                    + ' '.join(f"{e['name']} (item {e['id']}): \"{e['ask']}\" Files: {'; '.join(e['show_files'])}. Buttons: " + ', '.join(f"{b['label']} [{b['choice']}]" for b in e['buttons']) + '.'
+                               for e in group['items']) + ' ' + out['how'])
         if not item:
             return ((f"Show these files, each with its line, and ask nothing: {'; '.join(p + ': ' + s for p, s in shows)}. " if shows else '')
                     + ' '.join(out.get('working') or []) + (' ' if out.get('working') else '') + out.get('say_last', ''))
@@ -2492,8 +2527,8 @@ def cmd_visuals(a):
         return (on_page + first + f"{item['position']}. Post `message` as it is, then ask `ask`: \"{item.get('ask') or item['question']}\" " + (f"Files to show, in this order: {'; '.join(paths)}. " if paths else '')
                 + 'Buttons: ' + ', '.join(f"{b['label']} [{b['choice']}]" for b in item['buttons']) + '. ' + item['how'])
     if a.what == 'next':   # design/188 (SK, 12 Nov 2026): the one decision the operator takes now, handed out by the server; or what is being made
-        out = write(base + '/chat/next', {'one': bool(a.one)})
-        said = chat_line(out) + (' ' + out['then'] if out.get('then') and not out.get('item') else '')   # design/211: a v2 round that waits for the assistant (the looks, a rewrite): the server's sentence
+        out = write(base + '/chat/next', {'one': bool(a.one), 'many': True})   # release 2, B4: this tool can show a group
+        said = chat_line(out) + (' ' + out['then'] if out.get('then') and not (out.get('item') or out.get('group')) else '')   # design/211: a v2 round that waits for the assistant (the looks, a rewrite): the server's sentence
         chat = ws / 'work' / 'page' / 'in-chat.txt'   # the critic's point 4: once the step went to the chat, neither sentence is repeated on every later `next`
         early, lost = ({}, '') if chat.is_file() else republish_now(ws), page_unconfirmed(ws, 'Ask this step in the chat: what follows is its next decision.')   # fix set (c), (e)
         if lost[0]:   # said once: the round is dealt with, the step is asked here
@@ -2685,7 +2720,7 @@ def cmd_visuals(a):
     if a.what == 'decide':   # design/188: the operator's answer to that one decision; any other item is refused by the server
         if not (getattr(a, 'item', None) and getattr(a, 'choice', None)):
             emit({'action': 'refused', 'message': 'Give the item and the button chosen: `vw visuals decide --item <id from vw visuals next> --choice <the button\'s choice> --quote "<their words>"`.'}, 2)
-        out = write(base + '/chat/answer', {'item': a.item, 'choice': a.choice, 'quote': a.quote or '', 'notes': a.notes or '', 'one': bool(a.one)})
+        out = write(base + '/chat/answer', {'item': a.item, 'choice': a.choice, 'quote': a.quote or '', 'notes': a.notes or '', 'one': bool(a.one), 'many': True})
         emit(out, 0, 'Recorded. ' + (out.get('then') or '') + ' ' + chat_line(out))   # the answer carries the next decision: one call per answer
     if a.what == 'accept':
         emit(write(base + '/accept', {'gap_ids': a.gaps, 'quote': a.quote}))
@@ -3993,7 +4028,7 @@ def build_parser():
     s = sub.add_parser('view'); s.add_argument('--stage', required=True); s.set_defaults(fn=cmd_view)
     s = sub.add_parser('revise'); s.add_argument('--stage', required=True); s.add_argument('--unit'); s.add_argument('--confirm'); s.set_defaults(fn=cmd_revise)
     s = sub.add_parser('decide'); s.add_argument('--stage', required=True); s.add_argument('--unit'); s.add_argument('--decision', required=True, choices=['retry', 'revise', 'defect', 'stop']); s.add_argument('--note'); s.set_defaults(fn=cmd_decide)
-    s = sub.add_parser('defect'); s.add_argument('--stage'); s.add_argument('--error', required=True); s.add_argument('--log'); s.set_defaults(fn=cmd_defect)
+    s = sub.add_parser('defect', help=DEFECT_HELP, description=DEFECT_HELP); s.add_argument('--stage'); s.add_argument('--shot'); s.add_argument('--error', required=True); s.add_argument('--log'); s.set_defaults(fn=cmd_defect)
     s = sub.add_parser('clients'); s.add_argument('--search'); s.set_defaults(fn=cmd_clients)
     s = sub.add_parser('web'); s.add_argument('--about'); s.add_argument('--ok', help="the operator's words allowing the search (design/48 O.1)"); s.set_defaults(fn=cmd_web)
     s = sub.add_parser('stage'); s.add_argument('stage'); s.add_argument('step', choices=['prepare', 'preview', 'record']); s.add_argument('--quote'); s.add_argument('--title'); s.add_argument('--category', help='intake record: the category the operator chose with the title (design/192)'); s.add_argument('--file', help='intake prepare: which document in in/ is the script')
@@ -4028,7 +4063,7 @@ def build_parser():
     s = sub.add_parser('planning'); s.add_argument('rest', nargs=argparse.REMAINDER); s.set_defaults(fn=lambda a: retired('planning'))   # design/35 row 2: version 1 retired
     s = sub.add_parser('visuals'); s.add_argument('what', choices=VISUALS_WHAT)
     for flag in ('--inr', '--file', '--gap', '--choice', '--quote', '--element', '--name', '--clip', '--at', '--url', '--kind', '--prompt', '--parents', '--size', '--quality', '--ref', '--sha', '--shot', '--provider', '--model', '--start', '--end', '--motion', '--continuity', '--seconds', '--job', '--decision', '--notes', '--timing', '--answer', '--variants', '--end-answer', '--camera', '--support', '--look', '--reuse', '--considered', '--crop', '--question',
-                 '--keywords', '--search', '--n', '--reason', '--verdicts', '--picks', '--sets', '--move', '--role', '--item', '--choices', '--cost', '--source', '--accept', '--send-back', '--base', '--verdict', '--words', '--make', '--aside', '--back', '--made', '--in-s', '--uploaded'):   # design/177: round's step-2 actions   # design/124 Changes 6, 9   # design/73, design/79; design/94 --move; design/106 --role; design/110; design/121 --source
+                 '--keywords', '--search', '--n', '--reason', '--verdicts', '--picks', '--sets', '--move', '--role', '--item', '--choices', '--cost', '--source', '--accept', '--send-back', '--base', '--verdict', '--words', '--make', '--aside', '--back', '--made', '--in-s', '--uploaded', '--answers'):   # design/177: round's step-2 actions   # design/124 Changes 6, 9   # design/73, design/79; design/94 --move; design/106 --role; design/110; design/121 --source
         s.add_argument(flag)
     s.add_argument('--undo', action='store_true', help='round: undo Done until the next step used it (design/110 rule 0)')
     s.add_argument('--rest', action='store_true', help="round: make the other sets, on the operator's word (design/211)"); s.add_argument('--rewrite', help='round: the file of the rewritten requests, rows {element_id, prompt} (design/211)')
@@ -4055,6 +4090,7 @@ def build_parser():
     s.add_argument('--crop', action='append', help='snapshot: a close-up left,top,width,height as fractions of the frame; repeatable')
     s.add_argument('--off', action='store_true', help="finish: take the drawing's finish away (design/186)"); s.add_argument('--on', action='store_true', help='finish: put it back')
     s.add_argument('--still', action='store_true', help='upload: the still end-frame, the picture at the end of the shot with no motion, approved before the motion (design/221 row 3)')
+    s.add_argument('--wait', action='store_true', help='render, status: wait inside the tool until that job is ready (release 3; check and snapshot always wait)')
     s.set_defaults(fn=cmd_motion)
     s = sub.add_parser('guide'); s.add_argument('what', choices=['scene', 'status', 'frames', 'verdict', 'drawing', 'drawing-approve', 'drawing-reject', 'still', 'look', 'repair', 'approve', 'reject', 'prompt', 'shoot', 'cause'])   # integration steps B to E
     for flag in ('--shot', '--file', '--override', '--still', '--sha', '--quote', '--notes', '--region', '--prompt', '--fix'):
