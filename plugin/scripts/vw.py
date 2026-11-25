@@ -1373,7 +1373,7 @@ def cmd_stage(a):
             extra = {'file': a.file, 'earlier_titles': m.get('client_runs') or [], 'last_category': m.get('last_category')} if a.stage == 'intake' else \
                 {'last_brief': m.get('last_brief'), 'client_rules': m.get('client_rules') or [], 'client_card': m.get('client_card') or {}, 'category': film_category(full), 'library_chapters': m.get('library_chapters') or []} if a.stage == 'brief' else \
                 {'last_voice': m.get('last_voice'), 'favourites': favourites(), 'voice_page': voice_page_of(nxt, m['run_id']), 'page_url': voice_page_url(m['code'])} if a.stage == 'voice' else \
-                {'known': lambda shas: (write(f"/api/runs/{m['run_id']}/library/known", {'shas': shas}) or {}).get('known') or {}} if a.stage == 'media' else {}   # design/147 L2
+                {'known': lambda shas: (write(f"/api/runs/{m['run_id']}/library/known", {'shas': shas}) or {}).get('known') or {}, 'has_footage': film_footage(full)} if a.stage == 'media' else {}   # design/147 L2
             prepared = prepare(ws, procedure, prior, **extra)
             if a.stage in stages_text.STAGES:   # design/192 (intake 8, brief 7): when the assistant's work on a text stage began
                 log_quiet(m, 'step', f'{a.stage} prepare: the inputs and the instructions were given to the assistant')
@@ -1382,7 +1382,8 @@ def cmd_stage(a):
             def progress(k, n, name, size):   # design/41 5.4: one line per finished clip, visible in the tool result
                 print(f'uploaded {k}/{n} {name} ({size / 1e6:.0f} MB)', file=sys.stderr, flush=True)
             result = record(ws, procedure, prior, lambda stage, path, sha, size: upload_file(m, stage, path, sha, size),
-                            camera_audio=a.camera_audio, note=a.note, progress=progress, copies=getattr(a, 'copies', None), shot_on=getattr(a, 'shot_on', None))   # design/107 §6; design/146
+                            camera_audio=a.camera_audio, note=a.note, progress=progress, copies=getattr(a, 'copies', None), shot_on=getattr(a, 'shot_on', None),
+                            has_footage=film_footage(full), shape=(((full.get('film') or {}).get('shape') or {}).get('value')))   # design/107 §6; design/146
         elif a.stage == 'voice':
             job = None
             if a.job:   # design/52 D: the record from a kept narration, fetched for the operator to listen to
@@ -1396,6 +1397,14 @@ def cmd_stage(a):
                 if not (a.quote or '').strip():
                     emit({'action': 'refused', 'message': "--category is the operator's answer: pass their words with --quote. Nothing was recorded."}, 2)
                 write(f"/api/runs/{m['run_id']}/film", {'key': 'category', 'value': a.category, 'quote': a.quote})
+            footage = getattr(a, 'footage', None)   # SK, 23 Nov 2026: asked with the title; the media step and every instruction after it read it
+            if footage:
+                if not (a.quote or '').strip():
+                    emit({'action': 'refused', 'message': "--footage is the operator's answer: pass their words with --quote. Nothing was recorded."}, 2)
+                write(f"/api/runs/{m['run_id']}/film", {'key': 'footage', 'value': footage, 'quote': a.quote})
+            elif not ((full.get('film') or {}).get('footage') or {}).get('value'):
+                emit({'action': 'refused', 'message': 'Ask the operator, with the title: does this film have camera footage of its own? Then `--footage own` (clips were shot for it) '
+                                                      'or `--footage none` (no clips: pictures and AI only). Nothing was recorded.'}, 2)
             result = record(ws, procedure, prior, a.title, m.get('client') or '')
         elif a.stage == 'brief':
             result = record(ws, procedure, prior, client_card=m.get('client_card') or {})   # design/50 C
@@ -1434,6 +1443,11 @@ def cmd_stage(a):
     emit(row, 0, f'Recorded {a.stage}. ' + (next_line(row['next']) if row.get('next') else 'Run `vw next`.') + (f' WARNING: {warning}' if warning else ''))
 
 
+def film_footage(full):
+    """SK, 23 Nov 2026: 'none' when the operator said the film has no camera footage of its own; 'own' otherwise (every film from before the question)."""
+    return (((full or {}).get('film') or {}).get('footage') or {}).get('value') or 'own'
+
+
 def film_category(full):
     """design/192: the category recorded on the run, or None (not asked yet, or a film started before categories)."""
     return (((full or {}).get('film') or {}).get('category') or {}).get('value')
@@ -1445,16 +1459,16 @@ def run_and_procedure(m, stage, with_procedure):
     version = m.get('version')
     if not with_procedure or not version:
         full = call('GET', f"/api/runs/{m['run_id']}")
-        return full, (call('GET', f"/api/procedures/{full['procedure_version']}/{stage}") if with_procedure else None)
+        return full, (call('GET', f"/api/procedures/{full['procedure_version']}/{stage}?run={m['run_id']}") if with_procedure else None)
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=2) as pool:
         f_run = pool.submit(request, 'GET', f"/api/runs/{m['run_id']}")
-        f_proc = pool.submit(request, 'GET', f"/api/procedures/{version}/{stage}")
+        f_proc = pool.submit(request, 'GET', f"/api/procedures/{version}/{stage}?run={m['run_id']}")
         (full, code_run), (procedure, code_proc) = f_run.result(), f_proc.result()
     if code_run:
         finish(full, code_run)
     if full.get('procedure_version') != version:  # adopted to another version since start: fetch that one
-        return full, call('GET', f"/api/procedures/{full['procedure_version']}/{stage}")
+        return full, call('GET', f"/api/procedures/{full['procedure_version']}/{stage}?run={m['run_id']}")
     if code_proc:
         finish(procedure, code_proc)
     return full, procedure
@@ -2006,6 +2020,22 @@ def page_uploaded(folder, text):
 
 
 OWN_TYPES = ('.png', '.jpg', '.jpeg', '.webp')   # what the server's own-picture path reads
+NOT_READ_TYPES = ('.svg', '.pdf', '.ai', '.eps', '.psd', '.tif', '.tiff', '.heic', '.bmp', '.gif')
+
+
+def in_pictures(ws):
+    """SK, 23 Nov 2026 (no footage, release 3, T3): the operator's pictures in the run folder's in/, its folders too (in/brand/ apart: logos are
+    references, given with `vw visuals supply`): (those the server reads, those it does not), as paths from the run folder."""
+    root = Path(ws) / 'in'
+    files = sorted(p for p in root.rglob('*') if p.is_file() and 'brand' not in p.relative_to(root).parts[:-1]) if root.is_dir() else []
+    rel = lambda p: p.relative_to(ws).as_posix()
+    return [rel(p) for p in files if p.suffix.lower() in OWN_TYPES], [rel(p) for p in files if p.suffix.lower() in NOT_READ_TYPES]
+
+
+def in_pictures_line(ws):
+    read, not_read = in_pictures(ws)
+    return ((f"The operator gave {len(read)} picture{'' if len(read) == 1 else 's'} in in/ ({', '.join(read)}): look at each before the treatment. " if read else '')
+            + (f"Not read by the server ({', '.join(not_read)}): pictures are PNG, JPEG or WebP, up to 15 MB; ask the operator for a PNG of each. " if not_read else ''))
 
 
 def page_own(folder, base, answers):
@@ -2181,13 +2211,14 @@ def _round_one(a, base):
 
 
 VISUALS_WHAT = ['prepare', 'treatment', 'sequence', 'budget', 'check', 'propose', 'select', 'accept', 'revise', 'elements', 'round', 'search', 'pick', 'nothing-fits', 'frame', 'supply', 'own', 'web',
-                'image', 'approve', 'reject', 'bind', 'packet', 'generator', 'prepare-take', 'take', 'status', 'fetch', 'review', 'still', 'asset', 'generations', 'record', 'feedback', 'footage', 'clip', 'reuse', 'spec', 'measure', 'unplace', 'fix', 'note', 'ask', 'answer', 'not-this', 'draw', 'font', 'scene', 'plan-join', 'plan', 'next', 'decide', 'card', 'page', 'cap', 'likeness', 'digest', 'trial', 'look', 'pictures']   # design/113; design/117   # design/74 L26, L7; design/76; design/73; design/79; design/106 N4
+                'image', 'approve', 'reject', 'bind', 'packet', 'generator', 'prepare-take', 'take', 'status', 'fetch', 'review', 'still', 'asset', 'generations', 'record', 'feedback', 'footage', 'clip', 'reuse', 'spec', 'measure', 'unplace', 'fix', 'note', 'ask', 'answer', 'not-this', 'draw', 'font', 'scene', 'plan-join', 'plan', 'next', 'decide', 'card', 'page', 'cap', 'likeness', 'digest', 'trial', 'look', 'pictures', 'boards']   # design/113; design/117   # design/74 L26, L7; design/76; design/73; design/79; design/106 N4
 
 
 # design/106 T3: each subcommand takes only the flags it reads; any other is refused by name, before anything reaches the server
 _PLACE = {'file', 'element', 'name', 'clip', 'at', 'url', 'quote'}
 _REUSE = {'reuse', 'considered', 'crop'}
 VISUALS_FLAGS = {
+    'boards': {'make'},   # SK, 23 Nov 2026: the look boards of a film with no camera footage
     'digest': set(), 'trial': {'file', 'element', 'clip', 'at'}, 'look': {'file'},   # design/211 part A: the digest of the footage, trial frames, the looks
     'prepare': set(), 'budget': set(), 'cap': {'inr', 'quote'}, 'elements': set(), 'feedback': set(), 'check': {'file'}, 'propose': {'file', 'answers'}, 'plan': set(), 'treatment': {'file', 'quote', 'accept', 'send_back', 'notes'}, 'plan-join': {'base', 'gaps', 'rebuild'},
     'select': {'gap', 'choice', 'job', 'notes', 'timing', 'quote', 'in_s'}, 'accept': {'gaps', 'quote'}, 'next': {'one'}, 'decide': {'item', 'choice', 'quote', 'notes', 'one'}, 'card': {'file', 'one'}, 'page': {'url', 'record', 'uploaded', 'pictures_again'}, 'revise': {'gap', 'notes', 'quote'}, 'record': {'gap', 'gaps', 'quote'},
@@ -2442,7 +2473,7 @@ def cmd_visuals(a):
         emit({**out, 'files': files, 'not_shareable': NOT_SHAREABLE}, 0,   # design/188: no page link; the operator decides in the chat
              f"Visuals package for reading in work/visuals/ ({len(files)} files, listed in `files`); gaps: {out['gaps']}. Read prompt.md, then part-preparation.md (what to read first). "
              f"Settle the treatment with the operator and record it before any plan. The image prompt library is in work/visuals/library/: read always/ once, and a step's folder once before its first prompt (steps.json maps them). "
-             + cap_line(out) + told)   # no page link: the server's visuals page is not the operator's; they get the footage line
+             + cap_line(out) + told + in_pictures_line(ws))   # no page link: the server's visuals page is not the operator's; they get the footage line
     if a.what == 'footage':   # design/88 F4: the measured footage, told; a correction only with the operator's words
         if not (a.camera or a.support or a.look):
             f = call('GET', base).get('footage') or {}
@@ -2450,7 +2481,7 @@ def cmd_visuals(a):
         out = write(base + '/footage', {'camera': a.camera, 'support': a.support, 'look': a.look, 'quote': a.quote})
         emit(out, 0, f"Corrected with the operator's words. {out.get('line')}")
     if a.what in ('check', 'propose'):
-        out = write(base + '/' + a.what, {'plan': _json_file(m, a.file), **({'answers': a.answers} if a.what == 'propose' and getattr(a, 'answers', None) else {})})   # release 3, C2: the question whose answer this plan follows
+        out = write(base + '/' + a.what, {'plan': _json_file(m, a.file), **({'pictures': in_pictures(ws)[0]} if in_pictures(ws)[0] else {}), **({'answers': a.answers} if a.what == 'propose' and getattr(a, 'answers', None) else {})})   # release 3, C2: the question whose answer this plan follows
         line = f"{a.what}: {out.get('status', 'saved')}"
         r = out.get('routes') or {}
         if r:   # design/65 C2: the routes, the images and the cost against the cap
@@ -2503,6 +2534,10 @@ def cmd_visuals(a):
         if out.get('draft'):
             emit(out, 0, f"Treatment draft sent ({figures}). Now `vw visuals page`: the operator answers on the page (design/204); the card, `vw visuals next`, only where the page cannot be shown.")
         emit(out, 0, f"Treatment recorded: {figures}. Now author out/visual-plan.json to it.")
+    if a.what == 'boards':   # SK, 23 Nov 2026: the look boards; with no --make the cost only, said before anything is made
+        out = write(base + '/boards', {'make': getattr(a, 'make', None) or ''})
+        out['show_files'] = [_download(m, f['key'], f"work/chat/{re.sub(r'[^A-Za-z0-9._-]', '-', f['name'])}") for f in out.get('show') or []]
+        emit(out, 0, out.get('next') or '')
     if a.what == 'sequence':   # design/65 B2': the states of a graphic, approved in one call
         refs = [x for part in (a.refs or []) for x in part.split(',') if x]
         out = write(base + '/sequence', {'shot_id': a.shot, 'reference_ids': refs, 'quote': a.quote or ''})
@@ -3542,6 +3577,8 @@ def cmd_options(a):
     if a.what == 'scenes':
         out = write(base + '/scenes', {'document': _json_file(m, a.file), 'quote': a.quote or ''}, wait=300)
         files = download_options_package(m, out['package']['key'])
+        if out.get('first_cut') or out.get('library'):   # SK, 23 Nov 2026: a film with no camera footage; the server says what follows (it wrote the cut, or the library has pieces)
+            emit({**out, 'files': files}, 0, f"Scenes and pauses recorded: {len(out['scenes'])} scenes, film {out['film_seconds']} s ({out['inserted_seconds']} s of pauses added). {out['next']}")
         emit({**out, 'files': files}, 0, f"Scenes and pauses recorded: {len(out['scenes'])} scenes, film {out['film_seconds']} s ({out['inserted_seconds']} s of pauses added). "
              f"Package refreshed in work/options/ ({len(files)} files); show the coverage report next."
              + (f" FIT NOTE, tell the operator: {out['fit_note']}" if out.get('fit_note') else '') + (f" CHAPTER NAMES: {out['chapters_note']}" if out.get('chapters_note') else ''))
@@ -3767,6 +3804,18 @@ def cmd_assembly(a):
         emit(out, 0, f"Assembly recorded (watched and listened); next {out.get('next') or '`vw delivery bundle`'}.")
 
 
+def download_words(manifest, skip, studio, code):
+    """(how to open the edit, what to say of the camera copies) after a download. SK, 23 Nov 2026: a package with no camera file (a film with no
+    clip in its cut) names no originals, no copies and no relink."""
+    camera = any(f.get('role') == 'original' for f in manifest['files'])
+    how = handoff.free_route_text(code) if not studio else \
+        'Resolve Studio found: `vw delivery open --originals "<folder>"` links the camera cuts to the originals and imports the timeline into Resolve (Resolve must be running with external scripting on).' if camera else \
+        'Resolve Studio found: `vw delivery open` imports the timeline into Resolve (Resolve must be running with external scripting on).'
+    copies = " The camera copies were left out: the cuts name your originals (`vw delivery download --camera` brings the copies)." if skip and camera else ''
+    copies += " The camera files are copies made by an editor: get the originals' folder and run `vw delivery relink-check --originals \"<folder>\"` before the handover." if manifest.get('camera_copies') == 'copies' else ''   # design/107 §6
+    return how, copies
+
+
 def download_bundle(m, manifest, into=None, roles=('original', 'normalised', 'narration')):
     """design/47 12.4: three at a time, one line per finished file; a failure stops before dispatch. design/107 Step C: `into` a folder (runs/VW-n/edit/),
     every file of the manifest when `roles` is None."""
@@ -3873,13 +3922,7 @@ def cmd_delivery(a):
         if not rep['ok']:
             emit({'action': 'refused', 'check': rep, 'message': 'The download is incomplete or wrong: ' + '; '.join(rep['problems'][:6]) + '. Run `vw delivery download` again: only what is missing or wrong moves.'}, 2)
         handoff.write_timeline_for(edit_dir, manifest)
-        how = handoff.free_route_text(m['code']) if found.get('edition') != 'studio' else \
-            'Resolve Studio found: `vw delivery open --originals "<folder>"` links the camera cuts to the originals and imports the timeline into Resolve (Resolve must be running with external scripting on).'
-        if skip:
-            copies = " The camera copies were left out: the cuts name your originals (`vw delivery download --camera` brings the copies)."
-        else:
-            copies = ''
-        copies += " The camera files are copies made by an editor: get the originals' folder and run `vw delivery relink-check --originals \"<folder>\"` before the handover." if manifest.get('camera_copies') == 'copies' else ''   # design/107 §6
+        how, copies = download_words(manifest, skip, found.get('edition') == 'studio', m['code'])
         emit({'resolve': found, 'check': rep, 'edit': str(edit_dir), 'open': how, 'camera_copies': manifest.get('camera_copies')}, 0, f"{words} {rep['present']} checked, {rep['cuts']} cuts, {rep['timeline_frames']} frames: the edit is in {edit_dir}.{copies} {how}")
     if a.what == 'open':   # design/107 Step F: Studio imports the timeline by scripting and reads it back; free Resolve gets the three steps
         found = handoff.find_resolve()
@@ -4123,7 +4166,7 @@ def build_parser():
     s = sub.add_parser('defect', help=DEFECT_HELP, description=DEFECT_HELP); s.add_argument('--stage'); s.add_argument('--shot'); s.add_argument('--error', required=True); s.add_argument('--log'); s.set_defaults(fn=cmd_defect)
     s = sub.add_parser('clients'); s.add_argument('--search'); s.set_defaults(fn=cmd_clients)
     s = sub.add_parser('web'); s.add_argument('--about'); s.add_argument('--ok', help="the operator's words allowing the search (design/48 O.1)"); s.set_defaults(fn=cmd_web)
-    s = sub.add_parser('stage'); s.add_argument('stage'); s.add_argument('step', choices=['prepare', 'preview', 'record']); s.add_argument('--quote'); s.add_argument('--title'); s.add_argument('--category', help='intake record: the category the operator chose with the title (design/192)'); s.add_argument('--file', help='intake prepare: which document in in/ is the script')
+    s = sub.add_parser('stage'); s.add_argument('stage'); s.add_argument('step', choices=['prepare', 'preview', 'record']); s.add_argument('--quote'); s.add_argument('--title'); s.add_argument('--category', help='intake record: the category the operator chose with the title (design/192)'); s.add_argument('--footage', choices=['own', 'none'], help='intake record: does the film have camera footage of its own (asked with the title)'); s.add_argument('--file', help='intake prepare: which document in in/ is the script')
     s.add_argument('--camera-audio', choices=['allowed', 'excluded'], help='media record: may the camera sound be used in the film (design/41 5.1)'); s.add_argument('--note', help="media record: the operator's words on the sound")
     for f in ('--camera', '--support', '--look', '--footage-note'):   # design/126 ME1: refused by name; the footage is measured at visuals
         s.add_argument(f, help=argparse.SUPPRESS)
