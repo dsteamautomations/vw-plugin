@@ -128,6 +128,10 @@ input[type=file]{max-width:100%;font:inherit;font-size:.9rem;color:var(--fg)}
 input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .acts .group{flex:1 1 100%}
 .ownpic{display:block;max-width:156px;max-height:110px;object-fit:contain;background:#fff;border-radius:6px;border:1px solid var(--line)}
+/* VW-25 issue 10: the operator's own pictures of one thing, each small with its name; in the box each has its Remove */
+.ownlist{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:10px}
+.ownlist li,.ownfig{margin:0;display:flex;flex-direction:column;gap:4px;align-items:flex-start;max-width:160px;font-size:.85rem;color:var(--muted);overflow-wrap:anywhere}
+.ownrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 /* design/211: the reference round, rebuilt. A heading that folds the lines of one group; Claude's proposal above the buttons; under a picture what
    Claude saw, a "weak" tag and its own answer; a picture marked "not this picture" is dimmed; a picture shown only to compare with has a dashed edge. */
 .ghead{display:flex;align-items:center;gap:10px;width:100%;text-align:left;font-family:var(--display);font-size:1rem;padding:10px 14px;background:var(--surface)}
@@ -327,6 +331,20 @@ table.loss td:nth-child(1){width:36%;color:var(--fg)} table.loss td:nth-child(3)
 .spanel .group{border:0;padding:0}
 .sacts{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
 .smsg{color:var(--stop);margin:6px 0}
+/* Minor corrections as an edit (SK, 25 Nov 2026): the marking control. The picture large, in place; the canvas lies over it and takes the mouse and the finger */
+.smark{display:flex;flex-direction:column;gap:10px;min-width:0} .smtools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+#sets .smtools .sbtn{padding:7px 12px} #sets .smtools .sbtn[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.smwrap{position:relative;align-self:flex-start;width:100%;line-height:0;border-radius:10px;overflow:hidden;background:var(--line)}   /* as wide as its room, as high as 58% of the window: `sMarkView` sets the most from the picture's own shape */
+#sets .smwrap .sbigb{display:block;position:static;width:100%;height:auto;border-radius:0;cursor:default}
+.smwrap .sbigb img,.smwrap .smimg{position:static;display:block;width:100%;height:auto}
+.smwrap .sbigb .ph{min-width:320px;min-height:180px;line-height:1.4}
+.smcv{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
+.smrow{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:16px;align-items:start}
+.smrow textarea{width:100%;min-height:70px} .smrow label{display:block;font-weight:600;margin-bottom:6px} .smrow .stick{font-weight:400;margin:8px 0;display:flex;gap:8px;align-items:center}
+.smtold{margin:0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface);white-space:pre-line;font-size:.9rem}
+.smlist{list-style:none;margin:8px 0 0;padding:0;font-size:.9rem;color:var(--muted)}
+.smdo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;max-width:760px} .smdo p{margin:4px 0 0;font-size:.85rem;color:var(--muted)}
+@media (max-width:860px){ .smrow,.smdo{grid-template-columns:minmax(0,1fr)} }
 .sgate{color:var(--muted);font-size:13px;margin:4px 0}
 .sownp{margin:2px 0 8px}
 .smore{margin-top:22px;border-top:1px solid var(--line);max-width:900px}
@@ -370,7 +388,7 @@ table.loss td:nth-child(1){width:36%;color:var(--fg)} table.loss td:nth-child(3)
 .pqbar{display:grid;gap:8px;max-width:560px;margin:4px 0 6px}
 .pkw{display:block;font-size:12px;color:var(--muted)} #sets .sfold[data-fold="coming"]{gap:8px}
 .pagt{color:var(--chg);font-weight:600}
-.pcoming{list-style:none;margin:0 0 14px;padding:0} .pcoming li{padding:5px 10px 5px 20px;color:var(--muted);font-size:13px;line-height:1.35} .pcoming small{display:block;font-size:12px}
+.pcoming{list-style:none;margin:0 0 14px;padding:0} .pcoming li{padding:5px 10px 5px 20px;color:var(--muted);font-size:13px;line-height:1.35} .pcoming small{display:block;font-size:12px} .pcoming li[data-state="stuck"]{color:var(--chg)}
 .pnone{font-size:12px;color:var(--muted)}
 /* design/222 (SK, 19 Nov 2026): step 7, "AI video", in the same frame, as on the trial SK approved: the take large and playing, the words spoken during
    the shot under its name and marked in time, beside it the check in one line, the buttons and two links; the film order and the details open over the page. */
@@ -621,27 +639,83 @@ function pictures(line,onChange){   // a line with pictures: the row, the facts 
   if(line.assumed) wrap.appendChild(el('p','changed','Assumed, with no source (say if any is wrong): '+line.assumed));
   return wrap;
 }
-function ownBox(line){   // design/210 part 2: "Use my own picture". The file goes to the page's own file store; the answer then names it, and the assistant carries it to VideoWizard on "done"
-  const o=line.own, wrap=el('div','group'), msg=el('span','said','');
-  wrap.appendChild(el('h4',null,o.label)); wrap.appendChild(el('p','said',o.text));
+// VW-25 issues 10 and 11 (25 Nov 2026): "Use my own picture" takes up to three pictures of one thing (one photo of a real person) and the operator's
+// words about them. The answer's `own` is a list, in the order added: [{id,url,name,type,size,mark}]; `notes` are the words, one comment for the line.
+// Every change is saved at once, so a reload keeps the pictures; with none left the line is unanswered again. An answer written before this (`own`: one
+// object) is read as a list of one. The older way is retired: one file per line (`file.files[0]`, `own: {…}`). What the box says comes with the round
+// (`layout.words.own`); OWN_SAYS serves a round that an older server wrote.
+const OWN_SAYS={count:'Up to three pictures of this thing, one by one or several at once.',count_one:'One photo of this person: to give another, remove this one first.',
+  most:'Three pictures at most. Remove one first.',one:'One photo of a person at most. Remove one first.',again:'Try again',remove:'Remove',
+  failed:'The picture could not be added: {name}. The other pictures stay.',twice:'{name} is here already: it is taken once.',label:'Your words about the picture (optional)',hint:'',
+  max:300,chars:'{n} of {max} characters',only:'Words alone are not an answer here: add the picture too, or choose another answer.',keep:'Save my words',
+  unsaved:'Your words are not saved yet: press “Save my words”.'};
+const ownSt={};   // by line: what the box says about the files just given ({text, file} with a file to try again), and whether files are being added
+const ownW=()=>Object.assign({},OWN_SAYS,W().own);
+const ownOf=a=>!a||a.choice!=='own'?[]:[].concat(a.own||[]).filter(p=>p&&typeof p.url==='string');
+const ownFigs=a=>ownOf(a).map(p=>mk('figure',{class:'ownfig'},mk('img',{class:'ownpic',alt:'Your own picture'+(p.name?': '+p.name:''),src:p.url}),p.name&&mk('figcaption',{},p.name)));
+const ownSaid=line=>{ const a=answers[line.line]; return ownOf(a).length?String(a.notes||''):''; };
+const ownWords=line=>line.comment?comment(line):String(drafts['c:'+line.line]!=null?drafts['c:'+line.line]:ownSaid(line)).trim().slice(0,ownW().max);
+async function ownMark(f){   // the same file is taken once, by its content; where the browser cannot hash it, by its name and size (the server compares the content again)
+  try{ const h=await crypto.subtle.digest('SHA-256',await f.arrayBuffer()); return Array.prototype.map.call(new Uint8Array(h),b=>('0'+b.toString(16)).slice(-2)).join(''); }
+  catch(e){ return 'n:'+f.name+':'+f.size; } }
+function ownSave(line,list,permission){
+  const a=answers[line.line]||{};
+  if(!list.length) return (!$('things').hidden?tUndo:!$('sets').hidden?sUndo:undo)(line);
+  write(line,'own',ownWords(line),{own:list,permission:permission||(a.choice==='own'&&a.permission)||''});
+}
+async function ownAdd(line,files,permission){   // one by one or several at once: each is refused or added by its own name, and the others stay
+  const o=line.own, w=ownW(), st=ownSt[line.line], max=o.max||(o.person?1:3);
+  let list=ownOf(answers[line.line]).slice();
+  st.busy=true; draw(true);
+  for(const f of files){
+    const name=String(f.name||'picture').slice(0,80);
+    if(OWN_TYPES.indexOf(f.type)<0){ st.msgs.push({text:name+' is not a PNG, JPEG or WebP picture: choose another.'}); continue; }
+    if(f.size>OWN_MAX){ st.msgs.push({text:name+': This picture is larger than 15 MB: choose a smaller one.'}); continue; }
+    const mark=await ownMark(f);
+    if(list.some(p=>p.mark===mark)){ st.msgs.push({text:w.twice.replace('{name}',name)}); continue; }
+    if(list.length>=max){ st.msgs.push({text:max===1?w.one:w.most}); break; }
+    try{ const r=await assets.upload(f); if(!r||!r.id||!r.url) throw new Error('no file');
+      list=list.concat([{id:r.id,url:r.url,name:name,type:r.contentType||f.type,size:r.sizeBytes||f.size,mark:mark}]); ownSave(line,list,permission); }
+    catch(e){ st.msgs.push({text:w.failed.replace('{name}',name),file:f}); }   // The picture could not be added: named, with "Try again"
+  }
+  st.busy=false; draw(true);
+}
+function ownBox(line){   // design/210 part 2: "Use my own picture". The files go to the page's own file store; the answer then names them, and the assistant carries them to VideoWizard on "done"
+  const o=line.own, w=ownW(), wrap=el('div','group'), st=ownSt[line.line]||(ownSt[line.line]={msgs:[],busy:false});
+  const max=o.max||(o.person?1:3), list=ownOf(answers[line.line]);
+  wrap.appendChild(el('h4',null,o.label)); wrap.appendChild(el('p','said',[o.text,max===1?w.count_one:w.count].filter(Boolean).join(' ')));
   let perm=null;
   if(o.person&&!o.permitted){   // a real person's photo: the operator's own words that they have the permission, before the photo is taken
-    perm=el('input'); perm.type='text'; perm.maxLength=300; perm.placeholder="Your words: that you have this person's permission"; perm.setAttribute('aria-label',"Your words that you have this person's permission");
+    perm=el('input'); perm.type='text'; perm.maxLength=300; perm.id='ownp-'+line.line; perm.placeholder="Your words: that you have this person's permission"; perm.setAttribute('aria-label',"Your words that you have this person's permission");
     perm.value=drafts['p:'+line.line]||''; perm.addEventListener('input',()=>{drafts['p:'+line.line]=perm.value;}); wrap.appendChild(perm); }
-  const file=el('input'); file.type='file'; file.accept=OWN_TYPES.join(','); file.setAttribute('aria-label',o.label);   // image/png,image/jpeg,image/webp
+  const words=()=>perm?perm.value.trim():'';
+  const fixB=!o.person&&!$('sets').hidden&&line.case==='judge'&&SW().mark&&(line.buttons||[]).find(b=>b.mark);   // Minor corrections: the operator's own picture is marked and corrected like a picture of the set
+  if(list.length) wrap.appendChild(mk('ul',{class:'ownlist'},list.map((p,i)=>mk('li',{},mk('img',{class:'ownpic',alt:'',src:p.url}),mk('span',{},p.name||'Picture '+(i+1)),   // each one small, with its name; removable before "done"
+    fixB&&mk('button',{type:'button','data-own':p.id,disabled:st.busy,on:{click:()=>sMark(line,p.id,true)}},SW().mark.own),
+    mk('button',{type:'button',disabled:st.busy,'aria-label':w.remove+' '+(p.name||'picture '+(i+1)),on:{click:()=>{ st.msgs=[]; ownSave(line,list.filter((x,j)=>j!==i)); }}},w.remove)))));
+  const file=el('input'); file.type='file'; file.accept=OWN_TYPES.join(','); file.multiple=max>1; file.disabled=st.busy; file.setAttribute('aria-label',o.label);   // image/png,image/jpeg,image/webp
   file.addEventListener('change',()=>{
-    const f=file.files&&file.files[0], words=perm?perm.value.trim():''; if(!f) return;
-    const no=m=>{ msg.textContent=m; file.value=''; file.disabled=false; };
-    if(OWN_TYPES.indexOf(f.type)<0) return no('This file is not a PNG, JPEG or WebP picture: choose another.');
-    if(f.size>OWN_MAX) return no('This picture is larger than 15 MB: choose a smaller one.');
-    if(perm&&!words){ perm.focus(); return no("Write first that you have this person's permission, then add the photo."); }
-    msg.textContent='Adding your picture…'; file.disabled=true;
-    assets.upload(f).then(r=>{
-      if(!r||!r.id||!r.url) return no('The picture could not be added. Try again, or give it to the assistant in the chat.');
-      write(line,'own',comment(line),{own:{id:r.id,url:r.url,name:String(f.name||'').slice(0,80),type:r.contentType||f.type,size:r.sizeBytes||f.size},permission:words});
-    },e=>no('The picture could not be added ('+((e&&(e.code||e.message))||'error')+'). Try again, or give it to the assistant in the chat.'));
+    const fs=Array.prototype.slice.call(file.files||[]); if(!fs.length) return;
+    st.msgs=[];
+    if(perm&&!words()){ st.msgs=[{text:"Write first that you have this person's permission, then add the photo."}]; draw(true); const p=$('ownp-'+line.line); if(p) p.focus(); return; }
+    ownAdd(line,fs,words());
   });
-  wrap.appendChild(file); wrap.appendChild(msg);
+  wrap.appendChild(file);
+  if(st.busy) wrap.appendChild(el('span','said','Adding your picture…'));
+  st.msgs.forEach(m=>wrap.appendChild(mk('p',{class:'said',role:'status'},m.text,m.file&&[' ',mk('button',{type:'button',disabled:st.busy,
+    on:{click:()=>{ st.msgs=st.msgs.filter(x=>x!==m); ownAdd(line,[m.file],words()); }}},w.again)])));
+  if(!line.comment){   // issue 11: the operator's words about the picture, at most 300 characters, with the count (the older layout has its comment box above)
+    const ta=el('textarea'), cnt=el('span','count'), hint=el('span','said'), cut=()=>ta.value.trim().slice(0,w.max);
+    const show=()=>{ cnt.textContent=w.chars.replace('{n}',ta.value.length).replace('{max}',w.max); hint.textContent=ownOf(answers[line.line]).length&&cut()!==ownSaid(line).trim()?w.unsaved:''; };
+    ta.maxLength=w.max; ta.setAttribute('maxlength',String(w.max)); ta.id='ownw-'+line.line; ta.style.minHeight='48px'; ta.placeholder=w.hint; ta.setAttribute('aria-label',w.label);
+    ta.value=drafts['c:'+line.line]!=null?drafts['c:'+line.line]:ownSaid(line);
+    ta.addEventListener('input',()=>{ if(ta.value.length>w.max) ta.value=ta.value.slice(0,w.max); drafts['c:'+line.line]=ta.value; show(); });
+    const keep=mk('button',{type:'button',id:'ownk-'+line.line,disabled:st.busy,on:{click:()=>{ const have=ownOf(answers[line.line]);
+      st.msgs=have.length?[]:[{text:w.only}];   // words alone are not an "own" answer: the box asks for the picture, or another answer
+      if(have.length) ownSave(line,have); else draw(true); }}},w.keep);
+    show();
+    wrap.appendChild(mk('label',{for:ta.id},w.label)); wrap.appendChild(ta); wrap.appendChild(mk('div',{class:'ownrow'},keep,cnt,hint));
+  }
   return wrap;
 }
 const KINDS={Person:'People',Place:'Places',Object:'Things',Material:'Materials',Animal:'Animals',Process:'Processes',Technique:'Techniques'};
@@ -725,10 +799,11 @@ function block(line,n){
     cancel.addEventListener('click',()=>{delete editing[line.line]; draw(true);});
     row.appendChild(save); row.appendChild(cancel); row.appendChild(count); wrap.appendChild(ta); wrap.appendChild(row); acts.appendChild(wrap);
   } else if(a){
-    if(a.own&&typeof a.own.url==='string'){ const im=el('img','ownpic'); im.alt='Your own picture'; im.src=a.own.url; acts.appendChild(im); }   // design/210 part 2: shown at once, until "done"
+    ownFigs(a).forEach(x=>acts.appendChild(x));   // design/210 part 2: shown at once, until "done"; VW-25 issue 10: every one of them
     if(a.notes) acts.appendChild(el('span','said','Your words: “'+a.notes+'”'));
-    const un=el('button',null,a.choice==='own'?'Remove my picture':'Undo my answer'); un.addEventListener('click',()=>undo(line)); acts.appendChild(un);
+    const un=el('button',null,a.choice==='own'?(ownOf(a).length>1?'Remove my pictures':'Remove my picture'):'Undo my answer'); un.addEventListener('click',()=>undo(line)); acts.appendChild(un);
     acts.appendChild(el('span','said','Saved on this page. It is recorded in VideoWizard when you say done in the chat.'));
+    if(a.choice==='own'&&line.own&&assets) acts.appendChild(ownBox(line));   // VW-25 issue 10: another picture, or one removed
     if(gate.length){ acts.appendChild(gmsg); check(); }
   } else if(line.state==='open'){
     if(line.kept) acts.appendChild(el('span','said',line.kept_note||'Kept, not recorded yet.'));
@@ -873,7 +948,7 @@ function tSays(l){   // the answer as it stands, said back
   const n=tKept(l).length, pic=n+' ticked picture'+(n===1?'':'s'), from=n?'from the '+pic:'from the description; the footage pictures are not used';
   const s={use:has?'Approve: the '+pic+(n===1?' is':' are')+' the reference.':'Approve.',set:(has?'Make a set '+from+'.':'Make a set.')+(a.notes?' Your words: '+q(a.notes):''),
     fix:has?(W().fix||'')+': '+q(a.notes)+' A set is made '+from+', with these words.':'Make a set, with your words: '+q(a.notes),
-    own:'My own picture'+(a.own&&a.own.name?': '+a.own.name:'')+'.'+(a.permission?' Permission: '+q(a.permission):''),ignore:(W().leave||'')+'.'}[a.choice]||String(a.choice);
+    own:(ownOf(a).length>1?'My own pictures':'My own picture')+(ownOf(a).some(p=>p.name)?': '+ownOf(a).map(p=>p.name).filter(Boolean).join(', '):'')+'.'+(a.notes?' Your words: '+q(a.notes):'')+(a.permission?' Permission: '+q(a.permission):''),ignore:(W().leave||'')+'.'}[a.choice]||String(a.choice);
   return ['Your answer: ',s];
 }
 function tLarge(p,btn){   // on a wide screen the row's pictures are wider than the small picture: the large one from the file store takes its place
@@ -1016,7 +1091,7 @@ function tMain(list){
     mk('p',{class:'tmsg',id:'tmsg',role:'status',hidden:!T.msg},T.msg));
   if(T.panel) kids.push(mk('div',{class:'tpanel',id:'tpanel'},tPanel(l)));
   if(tDone(l)){ const a=tOwn(l), s=tSays(l);
-    kids.push(mk('div',{class:'tanswer',id:'tanswer'},a&&a.own&&typeof a.own.url==='string'&&mk('img',{class:'ownpic',alt:'Your own picture',src:a.own.url}),mk('p',{},mk('b',{},s[0]),s[1]),
+    kids.push(mk('div',{class:'tanswer',id:'tanswer'},ownFigs(a),mk('p',{},mk('b',{},s[0]),s[1]),
       a&&mk('button',{class:'tbtn',id:'tundo',type:'button',on:{click:()=>tUndo(l)}},'Undo'))); }
   const det=mk('div',{class:'tdetails',id:'tdetails',hidden:true},mk('dl',{},[
     mk('dt',{},'Description'),mk('dd',{},l.desc),
@@ -1035,7 +1110,7 @@ const tFold=(btn,target)=>btn.addEventListener('click',()=>{ target.hidden=!targ
 // The list holds only what needs an answer, numbered, then "The other N sets"; one set at a time: its large picture, its small pictures below, and
 // beside it one answer for the whole set. Every word is the server's: the line's own (its heading, its buttons, what each answer will do) and the
 // screen's (`layout.words.sets`). Answers are written as every line's answer is written (`write`, `ref`); nothing is recorded before "done".
-const S={round:'',cur:null,panel:null,msg:'',timer:0,help:false,fold:{},open:{},view:{},cmp:{},cmpOn:{},pick:{},words:{},vbad:{},chk:{}};   // chk: the check boxes the operator opened, by item (release 1, B3)
+const S={round:'',cur:null,panel:null,msg:'',timer:0,help:false,fold:{},open:{},view:{},cmp:{},cmpOn:{},pick:{},words:{},vbad:{},chk:{},mk:null,marks:{},hist:{},every:{},later:{},tool:'rect',brush:.04};   // chk: the check boxes the operator opened, by item (release 1, B3)
 const PIC=()=>!!round&&(round.layout||{}).kind==='pictures';   // design/217: step 6 uses this frame with its own lines and words (`layout.words.pictures`)
 const TK=()=>!!round&&(round.layout||{}).kind==='takes';   // design/222: step 7 uses this frame too, with `layout.words.takes`
 const SW=()=>(PIC()?W().pictures:TK()?W().takes:W().sets)||{};
@@ -1048,7 +1123,7 @@ const sDone=l=>!!(sAns(l)||l.kept);
 const sWaiting=()=>{ const r=sRest(); return r?sLines().filter(l=>(r.covers||[]).indexOf(l.key)>=0):[]; };
 const sItems=()=>sLines().filter(l=>l.state==='open').concat(sRest()&&sWaiting().length?[sRest()]:[]);   // what needs an answer, then the other sets (A10)
 const sJudged=()=>sLines().every(l=>l.case!=='judge'||sDone(l));
-const sBtn=(l,a)=>a.choice==='own'?{act:'own',label:(l.own||{}).label,say:(l.own||{}).say}:(l.buttons||[]).find(b=>b.choice===a.choice||(b.all&&b.all.choice===a.choice))||((l.pics||[]).some(p=>p.choice===a.choice)&&(l.buttons||[]).find(b=>b.act==='approve'))||{};
+const sBtn=(l,a)=>a.choice==='own'?(a.fix&&(l.buttons||[]).find(b=>b.mark))||{act:'own',label:(l.own||{}).label,say:(l.own||{}).say}:(l.buttons||[]).find(b=>b.choice===a.choice||(b.all&&b.all.choice===a.choice))||((l.pics||[]).some(p=>p.choice===a.choice)&&(l.buttons||[]).find(b=>b.act==='approve'))||{};
 const sAgainst=l=>{ const a=sAns(l), b=a&&sBtn(l,a); if(TK()) return false;   /* design/223: a take has no check, so no answer goes against one */ if(PIC()) return !!(b&&(b.against||b.sure)); return !!(b&&l.rec&&((l.rec.do==='remake'&&b.act==='approve')||(l.rec.do==='use'&&b.act==='again'))); };   // A6: marked in the list; undone with the answer
 function sMain(l){ const m=sMade(l), a=sAns(l), c=S.pick[l.line]; return m.find(p=>c?p.code===c:!!a&&!!p.choice&&p.choice===a.choice)||m[0]; }   // A7: A, unless another is made the main picture
 function sSays(l){   // the answer as it stands, in the server's words: the main picture's sentence, else the button's
@@ -1056,7 +1131,7 @@ function sSays(l){   // the answer as it stands, in the server's words: the main
   const p=(l.pics||[]).find(x=>x.choice&&x.choice===a.choice), b=sBtn(l,a), all=!!b.all&&b.all.choice===a.choice;
   return [w.answer,String((p&&p.say)||(all?b.all.say:b.say)||b.label||a.choice).replace('{words}',a.notes||'')]; }
 function sRefuse(m){ S.msg=m||''; const e=$('smsg'); if(e){ e.textContent=S.msg; e.hidden=!S.msg; } }
-function sGo(id){ clearTimeout(S.timer); S.cur=id; S.panel=null; S.msg=''; S.help=false; S.open={}; S.over=null; sDraw(); $('smain').scrollTop=0; }
+function sGo(id){ clearTimeout(S.timer); S.cur=id; S.panel=null; S.mk=null; S.msg=''; S.help=false; S.open={}; S.over=null; sDraw(); $('smain').scrollTop=0; }
 function sAnswer(l,choice,notes,more){   // as every line's answer is written; after a moment the next thing that needs an answer opens
   S.panel=null; S.msg=''; write(l,choice,notes||'',more||{}); clearTimeout(S.timer);
   S.timer=setTimeout(()=>{ if(S.cur!==l.line) return; const n=sItems().find(x=>x.line!==l.line&&!sDone(x)); sGo(n?n.line:null); },1100); }
@@ -1065,6 +1140,7 @@ function sUndo(l){ clearTimeout(S.timer); if(!db||!round) return; ref(l).delete(
 function sOpen(p){ S.panel=p; S.msg=''; clearTimeout(S.timer); sMainDraw(); const box=$('spanel'); if(box) box.scrollIntoView({block:'nearest'}); const f=$('sback')||document.querySelector('#spanel textarea, #spanel input, #spanel button'); if(f) f.focus(); }
 function sAct(l,b,i){
   if(b.act==='approve'){ if(l.sure) return sOpen(S.panel==='sure'?null:'sure'); const p=l.pick&&sMain(l); return sAnswer(l,p?p.choice:b.choice,''); }   // A6: against "make again", asked once
+  if(b.mark&&SW().mark&&l.case==='judge'&&sMade(l).length) return sMark(l,(sMade(l).find(p=>p.code===S.view[l.line])||sMain(l)).code);   // Minor corrections: the marking control, on the picture shown
   if(b.needs_words||b.act==='again'||b.act==='leave') return sOpen(S.panel==='b'+i?null:'b'+i);
   sAnswer(l,b.choice,'');
 }
@@ -1095,13 +1171,97 @@ function sPanel(l){   // what opens under the buttons: the against-advice questi
         sAnswer(l,tick&&tick.checked?b.all.choice:b.choice,t); }}},b.go||b.label),cancel)]; }
   if(b.act==='leave'){ const loss=l.loss||{}; return [mk('label',{},loss.text||''),(loss.shots||[]).length?mk('p',{},loss.shots.join(', ')):null,
     mk('div',{class:'sacts'},mk('button',{class:'sbtn danger',id:'sleave',type:'button',on:{click:()=>sAnswer(l,b.choice,'')}},b.label),cancel)]; }
-  return [mk('label',{},b.ask||''),mk('div',{class:'sacts'},mk('button',{class:'sbtn primary',id:'sagain',type:'button',on:{click:()=>sAnswer(l,b.choice,'')}},w.again_go),cancel)];
+  const cm=b.comment&&mk('textarea',{id:'sagainw',maxlength:String(MAX),'aria-label':b.comment,placeholder:b.comment});   // "Make again" takes the operator's comment with it
+  return [mk('label',{},b.ask||''),cm,mk('div',{class:'sacts'},mk('button',{class:'sbtn primary',id:'sagain',type:'button',on:{click:()=>sAnswer(l,b.choice,cm?cm.value.trim().slice(0,MAX):'')}},w.again_go),cancel)];
+}
+// ---------- Minor corrections as an edit (SK, 25 Nov 2026): the marking control of the sets screen ----------
+// "Mark the place" under a picture of a set (and "Correct this picture" on the operator's own) opens it large, in place. One row of tools: Rectangle
+// (chosen first), Paint with its brush size, Undo, Redo, Clear marks. A mark has a red outline and a light tint, three at most on a picture, each
+// numbered, the same numbers in the list beside the words box. One words box, what the correction does well and poorly beside it, the tick, and
+// "Minor corrections" and "Make again" side by side. A mark is kept as fractions of the picture, {r:[x,y,w,h]} or {p:[x,y,x,y,...],s:brush}, by
+// the picture's own id; the picture is never changed here. Every word is the server's (the screen's `mark` words; the button's `every`).
+const MK_MAX=3, MK_PTS=200;
+const mkList=(l,key)=>((S.marks[l.line]||{})[key])||[];
+function mkSet(l,key,list){   // one step: the marks before are kept for Undo, and Redo starts over
+  const h=S.hist[l.line]||(S.hist[l.line]={u:[],r:[]}), all=S.marks[l.line]||(S.marks[l.line]={}); h.u.push(JSON.stringify(all)); h.r=[];
+  if(list.length) all[key]=list; else delete all[key]; S.msg=''; sMainDraw(); }
+function mkStep(l,from,to){ const h=S.hist[l.line]; if(!h||!h[from].length) return; h[to].push(JSON.stringify(S.marks[l.line]||{})); S.marks[l.line]=JSON.parse(h[from].pop()); S.msg=''; sMainDraw(); }
+function mkPaint(cv,list){   // the marks on the canvas over the picture
+  const c=cv.getContext('2d'), W=cv.width, H=cv.height; c.clearRect(0,0,W,H); c.lineJoin=c.lineCap='round'; c.font='bold '+Math.max(14,Math.round(W/45))+'px sans-serif'; c.textBaseline='top';
+  list.forEach((m,i)=>{ let at;
+    if(m.r){ const x=m.r[0]*W, y=m.r[1]*H, w=m.r[2]*W, h=m.r[3]*H; c.fillStyle='rgba(255,0,0,.15)'; c.fillRect(x,y,w,h); c.strokeStyle='#f00'; c.lineWidth=Math.max(2,W/400); c.strokeRect(x,y,w,h); at=[x+6,y+4]; }
+    else { c.strokeStyle='rgba(255,0,0,.35)'; c.lineWidth=Math.max(2,m.s*W); c.beginPath(); c.moveTo(m.p[0]*W,m.p[1]*H); for(let j=2;j<m.p.length;j+=2) c.lineTo(m.p[j]*W,m.p[j+1]*H); if(m.p.length===2) c.lineTo(m.p[0]*W+.1,m.p[1]*H); c.stroke(); at=[m.p[0]*W,m.p[1]*H]; }
+    c.lineWidth=3; c.strokeStyle='#fff'; c.strokeText(String(i+1),at[0],at[1]); c.fillStyle='#f00'; c.fillText(String(i+1),at[0],at[1]); }); }
+function mkCanvas(l,key,w){   // mouse and touch alike (pointer events)
+  const cv=mk('canvas',{class:'smcv',id:'smcv','aria-label':w.hint}), list=mkList(l,key); let live=null, start=null;
+  const at=e=>{ const b=cv.getBoundingClientRect(); return [(e.clientX-b.left)/b.width,(e.clientY-b.top)/b.height].map(v=>Math.round(Math.min(1,Math.max(0,v))*1e4)/1e4); };
+  const show=()=>mkPaint(cv,live?list.concat([live]):list);
+  cv._fit=()=>{ const b=cv.getBoundingClientRect(); if(b.width&&b.height){ cv.width=Math.round(b.width); cv.height=Math.round(b.height); } show(); };
+  cv.addEventListener('pointerdown',e=>{ if(list.length>=MK_MAX) return sRefuse(w.most); e.preventDefault(); try{ cv.setPointerCapture(e.pointerId); }catch(x){}
+    start=at(e); live=S.tool==='paint'?{p:[start[0],start[1]],s:S.brush}:{r:[start[0],start[1],0,0]}; show(); });
+  cv.addEventListener('pointermove',e=>{ if(!live) return; const q=at(e);
+    if(live.p){ const n=live.p.length; if(n<2*MK_PTS&&Math.hypot(q[0]-live.p[n-2],q[1]-live.p[n-1])>=.006) live.p.push(q[0],q[1]); }
+    else live.r=[Math.min(start[0],q[0]),Math.min(start[1],q[1]),Math.round(Math.abs(q[0]-start[0])*1e4)/1e4,Math.round(Math.abs(q[1]-start[1])*1e4)/1e4];
+    show(); });
+  const end=()=>{ const m=live; live=null; if(!m) return; if(m.r&&(m.r[2]<.01||m.r[3]<.01)) return show();   // a click with no drag is no rectangle
+    mkSet(l,key,list.concat([m])); };
+  cv.addEventListener('pointerup',end); cv.addEventListener('pointercancel',end);
+  if(window.ResizeObserver) new ResizeObserver(()=>cv._fit()).observe(cv);   // the large copy arrives, the window changes: the marks keep their place
+  return cv; }
+function sMark(l,code,own){ clearTimeout(S.timer); const a=answers[l.line];
+  if(!S.marks[l.line]&&a&&a.marks){ S.marks[l.line]=JSON.parse(JSON.stringify(a.marks)); if(a.every===false) S.every[l.line]=false; }   // an answer saved before (a reload): its marks and its tick are shown again
+  S.mk=code==null?null:{line:l.line,code:code,own:!!own}; S.panel=null; S.msg=''; sMainDraw(); const f=$('smark'); if(f) f.scrollIntoView({block:'nearest'}); }
+function sMarkView(l,b,m,gate,check){
+  const t=SW(), w=t.mark, own=S.mk.own, pics=own?ownOf(answers[l.line]):m, p=pics.find(x=>(own?x.id:x.code)===S.mk.code)||pics[0];
+  if(!p){ S.mk=null; return null; }
+  const key=own?p.id:p.ref, list=mkList(l,key), h=S.hist[l.line]||{u:[],r:[]}, one=pics.length<2, again=!own&&(l.buttons||[]).find(x=>x.act==='again');
+  const cv=mkCanvas(l,key,w), wrap=mk('div',{class:'smwrap',id:'smwrap'}), fit=()=>{ check(); const i=wrap.querySelector('img');
+    if(i&&i.naturalHeight) wrap.style.maxWidth='calc(58vh * '+(i.naturalWidth/i.naturalHeight).toFixed(4)+')'; cv._fit(); };
+  const tool=(id,name,label)=>mk('button',{class:'sbtn',id:id,type:'button','aria-pressed':String(S.tool===name),on:{click:()=>{ S.tool=name; sMainDraw(); }}},label);
+  const brush=mk('input',{type:'range',id:'smbrush',min:'1',max:'15','aria-label':w.brush}); brush.value=String(Math.round(S.brush*100)); brush.disabled=S.tool!=='paint'; brush.addEventListener('input',()=>{ S.brush=+brush.value/100; });
+  const step=(id,label,off,fn)=>{ const x=mk('button',{class:'sbtn',id:id,type:'button',on:{click:fn}},label); x.disabled=off; return x; };
+  let pic;
+  if(own){ pic=mk('img',{class:'smimg',alt:p.name||'',src:p.url}); pic.addEventListener('load',fit); } else pic=sBig(p,m,fit)[0];
+  const th=x=>{ const id=own?x.id:x.code, n=mkList(l,own?x.id:x.ref).length, on=x===p;
+    return mk('button',{class:'sth'+(on?' on':''),type:'button','aria-pressed':String(on),'aria-label':own?(x.name||''):x.label,'data-code':id,on:{click:()=>{ S.mk.code=id; S.msg=''; sMainDraw(); }}},
+      own?mk('img',{alt:'',src:x.url}):mk('span',{class:'ph'},x.missing?t.missing:t.loading),mk('span',{class:'sthl'},own?(x.name||''):[x.letter&&mk('b',{},x.letter),' '+(x.view||x.label)]),n?mk('em',{},w.count.replace('{n}',n)):null); };
+  const strip=one?null:mk('div',{class:'sths',id:'smset'},pics.map(th));
+  if(strip&&!own) Array.prototype.forEach.call(strip.querySelectorAll('.sth'),btn=>{ const x=m.find(y=>y.code===btn.getAttribute('data-code')); if(x&&!x.missing) loadThumb(x,btn,check,0); });
+  const ta=mk('textarea',{id:'sfix',maxlength:String(MAX)}); ta.value=S.words[l.line]||''; ta.addEventListener('input',()=>{ S.words[l.line]=ta.value; });
+  const every=!one&&b.every&&mk('input',{type:'checkbox',id:'severy'}), all=!own&&b.all&&mk('input',{type:'checkbox',id:'sall'});
+  if(every){ every.checked=S.every[l.line]!==false; every.addEventListener('change',()=>{ S.every[l.line]=every.checked; }); }
+  if(all){ all.checked=!!S.later[l.line]; all.addEventListener('change',()=>{ S.later[l.line]=all.checked; }); }   // both ticks keep their state while marks are drawn
+  const send=()=>{ const words=ta.value.trim().slice(0,MAX), kept=S.marks[l.line]||{}, marks={}; pics.forEach(x=>{ const k=own?x.id:x.ref; if((kept[k]||[]).length) marks[k]=kept[k]; });
+    if(!words){ sRefuse(w.need); ta.focus(); return; }
+    const has=Object.keys(marks).length>0, each=every?every.checked:true;
+    if(!each&&!has) return sRefuse(w.one);
+    const more=Object.assign({every:each},has?{marks:marks}:{}); S.mk=null;
+    if(own) sAnswer(l,'own',words,Object.assign({own:pics,permission:'',fix:true},more)); else sAnswer(l,all&&all.checked?b.all.choice:b.choice,words,more); };
+  const go=mk('button',{class:'sbtn primary',id:'sfixsend',type:'button',on:{click:send}},b.label), re=again&&mk('button',{class:'sbtn',id:'smagain',type:'button',on:{click:()=>{ S.mk=null; sAnswer(l,again.choice,ta.value.trim().slice(0,MAX)); }}},again.label);
+  if(!own){ gate.push(go); if(re) gate.push(re); }   // the set's own pictures must have shown, as for every answer on them
+  setTimeout(cv._fit,0);
+  return mk('div',{class:'smark',id:'smark'},
+    mk('div',{class:'smtools',role:'toolbar','aria-label':w.open},tool('smrect','rect',w.rect),tool('smpaint','paint',w.paint),mk('label',{class:'stick'},w.brush,' ',brush),
+      step('smundo',w.undo,!h.u.length,()=>mkStep(l,'u','r')),step('smredo',w.redo,!h.r.length,()=>mkStep(l,'r','u')),step('smclear',w.clear,!list.length,()=>mkSet(l,key,[])),
+      mk('span',{class:'sgrow'}),mk('button',{class:'slink',id:'smclose',type:'button',on:{click:()=>sMark(l,null)}},w.close)),
+    mk('p',{class:'said'},w.hint),
+    (wrap.append(pic,cv),wrap),strip,
+    mk('div',{class:'smrow'},
+      mk('div',{},mk('label',{for:'sfix'},w.ask),ta,
+        mk('ul',{class:'smlist',id:'smlist','aria-label':w.list},list.length?list.map((x,i)=>mk('li',{},(x.r?w.mark_rect:w.mark_paint).replace('{n}',i+1),' ',
+          mk('button',{class:'slink',type:'button',on:{click:()=>mkSet(l,key,list.filter((y,j)=>j!==i))}},w.remove))):mk('li',{},w.none)),
+        every&&mk('label',{class:'stick',for:'severy'},every,b.every.label),all&&mk('label',{class:'stick',for:'sall'},all,b.all.label)),
+      mk('p',{class:'smtold',id:'smtold'},w.told||'')),
+    mk('div',{class:'smdo'},mk('div',{},go,mk('p',{},w.fix_line)),re&&mk('div',{},re,mk('p',{},w.again_line))),
+    mk('p',{class:'smsg',id:'smsg',role:'status',hidden:!S.msg},S.msg));
 }
 function sThing(l){
   const w=SW(), a=sAns(l), kids=[mk('h2',{class:'sname'},l.name||l.title),mk('p',{class:'skind'},[l.kind,String(l.shots||'').split(' · ')[0].replace(/^./,c=>c.toLowerCase())].filter(Boolean).join(' · '))], side=[], gate=[], m=sMade(l), foot=sFoot(l);
   const seen=(l.pics||[]), gmsg=mk('p',{class:'sgate',id:'sgate',hidden:true}), sideBox=mk('div',{class:'sside'});
   const check=()=>{ if(!gate.length) return; const bad=seen.filter(p=>p.missing||picSeen[p.code]==='bad').map(p=>p.label), wait=seen.filter(p=>picSeen[p.code]!=='ok').length;   // as on every line with pictures (design/210)
     gate.forEach(b=>{ b.disabled=!!(bad.length||wait); }); gmsg.textContent=bad.length?String(w.gate_bad||'').replace('{pics}',bad.join(', ')):wait?w.gate_wait:''; gmsg.hidden=!gmsg.textContent; };
+  const fixB=w.mark&&(l.buttons||[]).find(b=>b.mark), marking=l.state==='open'&&fixB&&S.mk&&S.mk.line===l.line&&(S.mk.own||(l.case==='judge'&&m.length))?sMarkView(l,fixB,m,gate,()=>check()):null;
+  if(marking){ kids.push(marking,gmsg); setTimeout(check,0); return kids; }
   if(l.case==='judge'&&m.length){
     const mp=sMain(l), sel=m.find(p=>p.code===S.view[l.line])||mp, all=m.concat(foot);
     const cmp=!!S.cmpOn[l.line]&&foot.length>0, mate=foot.find(x=>x.code===S.cmp[l.line])||foot[Math.min(Math.max(m.indexOf(sel),0),foot.length-1)];   // A2: the footage beside the set's picture, never in its place
@@ -1114,6 +1274,7 @@ function sThing(l){
     const viewer=mk('div',{class:'sviewer'},
       mk('div',{class:'sbigrow'+(cmp?' two':''),id:'sbig'},big(sel,cmp&&sel.set_cap),cmp&&big(mate,mate.cmp_cap)),
       mk('p',{class:'sbigcap'},mk('b',{},sel.name||''),sel.view&&' · '+sel.view,m.length>1&&sel===mp&&mk('span',{class:'spill'},w.main),mk('span',{class:'sgrow'}),
+        l.state==='open'&&fixB?mk('button',{class:'slink',id:'smarkopen',type:'button',on:{click:()=>sMark(l,sel.code)}},w.mark.open):null,   // under the picture: it opens large, in place, to be marked
         foot.length?mk('button',{class:'slink',id:'scompare',type:'button','aria-pressed':String(cmp),on:{click:()=>{ S.cmpOn[l.line]=!cmp; sMainDraw(); }}},cmp?w.stop:w.compare):null),
       mk('div',{class:'sthis',id:'sthis'},(sel.faults||[]).length?[mk('b',{},sel.check_head),mk('ul',{},sel.faults.map(x=>mk('li',{},x)))]:sel.check_none?[sel.check_head&&mk('b',{},sel.check_head+' '),sel.check_none]:null,   // A4: what belongs to this picture
         l.pick&&m.length>1&&sel!==mp&&sel.main_label?[' ',mk('button',{class:'slink',id:'smainpick',type:'button',on:{click:()=>sPick(l,sel)}},sel.main_label)]:null),
@@ -1142,9 +1303,10 @@ function sThing(l){
     into.push(gmsg);
     if(l.own&&assets) into.push(mk('p',{class:'sownp'},mk('button',{class:'slink',type:'button','data-act':'own','aria-expanded':String(S.panel==='own'),on:{click:()=>sOpen(S.panel==='own'?null:'own')}},l.own.label)));   // A8
     if(l.refused) into.push(mk('p',{class:'smsg',id:'srefused'},l.refused));   // the server's refusal of the last "done", kept on its set
+    if(l.edit_note) into.push(mk('p',{class:'smsg',id:'seditnote'},l.edit_note));   // a correction that was not made, or Claude's one question about it
     into.push(mk('p',{class:'smsg',id:'smsg',role:'status',hidden:!S.msg},S.msg));
     if(sDone(l)){ const t=sSays(l), ag=sAgainst(l);
-      into.push(mk('div',{class:'sanswer'+(ag?' against':''),id:'sanswer'},a&&a.own&&typeof a.own.url==='string'&&mk('img',{class:'ownpic',alt:'',src:a.own.url}),mk('p',{},mk('b',{},t[0]),t[1],ag&&' '+w.against_say),
+      into.push(mk('div',{class:'sanswer'+(ag?' against':''),id:'sanswer'},ownFigs(a),mk('p',{},mk('b',{},t[0]),t[1],a&&a.choice==='own'&&a.notes&&' Your words: “'+a.notes+'”',ag&&' '+w.against_say),
         a&&mk('button',{class:'sbtn',id:'sundo',type:'button',on:{click:()=>sUndo(l)}},w.undo))); }
   }
   (l.case==='judge'&&m.length?side:kids).push(sDetails(l));
@@ -1351,7 +1513,8 @@ function sRail(){
       mk('i',{class:'sdot',role:'img',title:say,'aria-label':say},d?(ag?'!':'✓'):String(i+1)),mk('span',{class:'snm'},l.name||l.title,PIC()&&l.kind_words&&mk('small',{class:'pkw'},[l.kind_words,l.film_at].filter(Boolean).join(' · '))))); })));
   const coming=(PIC()||TK())&&(round.layout||{}).coming||[];   // design/217: what is being made or waits for Claude's check, nothing to answer: one folded row
   const earlier=PIC()&&(round.layout||{}).recorded||[];   // fix set (20 Nov 2026): what was answered earlier, in the chat: shown as recorded, in a folded row of its own
-  [['coming',w.coming,coming],['recorded',w.recorded,earlier]].forEach(([g,title,rows])=>{ if(!rows.length) return; const o=!!S.fold[g];
+  const stuck=(PIC()||TK())&&(round.layout||{}).waiting||[];   // release 1 of 27 Nov 2026, phase 4 part D: what is not moving, listed apart and open from the start
+  [['waiting',w.waiting,stuck],['coming',w.coming,coming],['recorded',w.recorded,earlier]].forEach(([g,title,rows])=>{ if(!rows.length) return; const o=g==='waiting'?S.fold[g]!==false:!!S.fold[g];
     kids.push(mk('button',{class:'sfold',type:'button','aria-expanded':String(o),'data-fold':g,on:{click:()=>{ S.fold[g]=!o; sRail(); }}},mk('span',{},title||''),String(rows.length)));
     if(o) kids.push(mk('ul',{class:'pcoming',id:'p'+g},rows.map(c=>mk('li',{'data-state':c.state},c.name,mk('small',{},[c.kind_words,c.note].filter(Boolean).join(' · ')))))); });
   const covered=(sRest()||{}).covers||[];
@@ -1372,13 +1535,13 @@ function sMainDraw(){
   main.replaceChildren(mk('div',{class:'swrap'},...[].concat(body).flat(6).filter(Boolean))); main.scrollTop=top; kOver(); }
 function sDraw(){
   if(S.round!==round.round){ const f=sItems().find(l=>!sDone(l));   // a new round: the first thing that needs an answer
-    Object.assign(S,{round:round.round,cur:f?f.line:null,panel:null,msg:'',help:false,over:null,fold:{},open:{},view:{},cmp:{},cmpOn:{},pick:{},words:{},vbad:{},chk:{}}); }
+    Object.assign(S,{round:round.round,cur:f?f.line:null,panel:null,msg:'',help:false,over:null,fold:{},open:{},view:{},cmp:{},cmpOn:{},pick:{},words:{},vbad:{},chk:{},mk:null,marks:{},hist:{},every:{},later:{}}); }
   $('sstep').textContent=round.step||''; $('shelp').textContent=SW().help||''; $('shelp').setAttribute('aria-expanded',String(S.help));
   sRail(); sMainDraw(); sCount(); }
 $('shelp').addEventListener('click',()=>{ S.help=!S.help; sDraw(); });
 document.addEventListener('keydown',e=>{   // A15: the arrow keys and Escape stay; the large picture has its own keys
   if($('sets').hidden||zoomed||e.ctrlKey||e.metaKey||e.altKey||!round) return;
-  if(e.key==='Escape'){ if(S.over) return kSheet(null); if(S.panel) return sOpen(null); if(S.help){ S.help=false; return sDraw(); } return; }
+  if(e.key==='Escape'){ if(S.over) return kSheet(null); if(S.mk){ const l=(round.lines||[]).find(x=>x.line===S.mk.line); return l?sMark(l,null):null; } if(S.panel) return sOpen(null); if(S.help){ S.help=false; return sDraw(); } return; }
   if(/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)||S.over) return;
   if(e.key==='ArrowLeft'||e.key==='ArrowRight'){ const it=TK()?(round.lines||[]):sItems(); if(!it.length) return; e.preventDefault();   // design/222: in step 7 every shot, the ones answered earlier too
     const i=it.findIndex(x=>x.line===S.cur), n=it[(Math.max(i,0)+(e.key==='ArrowRight'?(i<0?0:1):it.length-1))%it.length]; sGo(n.line); }

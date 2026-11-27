@@ -883,14 +883,11 @@ def cmd_guide(a):
         paths = _guide_fetch(base, a.shot, folder / 'drawing', names)
         d = (st.get('guide') or {}).get('drawing') or {}
         emit({'shot_id': a.shot, 'sha256': d.get('sha256'), 'status': d.get('status'), 'files': paths, 'changes': d.get('changes') or [], 'notes': d.get('notes') or []}, 0,
-             f"{len(paths)} sheets in work/guide/{a.shot}/drawing/; the drawing is {d.get('status')}. Show them to the operator: each person's pale side is the front, the purple side the back, "
-             f"the orange arm the right arm. Their answer: `vw guide drawing-approve --shot {a.shot} --sha {d.get('sha256')} --quote \"…\"` or `vw guide drawing-reject … --notes \"<what is wrong>\" --quote \"…\"`.")
-    if a.what in ('drawing-approve', 'drawing-reject'):
-        if not (a.sha and a.quote) or (a.what == 'drawing-reject' and not a.notes):
-            emit({'action': 'refused', 'message': "`vw guide drawing-approve --shot S --sha <the scene's sha256> --quote \"<the operator's words>\"`; "
-                                                  "`vw guide drawing-reject --shot S --sha <the scene's sha256> --notes \"<what is wrong>\" --quote \"<the operator's words>\"`."}, 2)
-        out = write(base + '/guide/drawing', {'shot_id': a.shot, 'sha256': a.sha, 'approved': a.what == 'drawing-approve', 'quote': a.quote, 'notes': a.notes or ''})
-        emit(out, 0, out.get('next'))
+             f"{len(paths)} sheets in work/guide/{a.shot}/drawing/. Each person's pale side is the front, the purple side the back, the orange arm the right arm. "
+             "Nobody approves the drawing: the still is ordered once the layout's check has passed.")
+    if a.what in ('drawing-approve', 'drawing-reject'):   # A1 (SK, 25 Nov 2026): the older way, refused by name (the server refuses it too, for an older tool)
+        emit({'action': 'refused', 'message': "The operator's approval of a layout drawing is retired (25 Nov 2026): the checker decides. "
+                                              "A fault in the layout is said on the still's card."}, 2)
     if a.what == 'scene':
         spec = _guide_json(ws, a.file, 'scene')
         out = write(base + '/guide/scene', {'shot_id': a.shot, 'scene': spec, 'overrides': {'support': a.override} if a.override else {}})
@@ -2044,7 +2041,11 @@ def page_own(folder, base, answers):
     there is handed to the server through the same calls as `vw visuals likeness` (a person, with the operator's words of permission) and
     `vw visuals own`, and its answer then carries `own_ref`, the picture's id on the server. A picture not fetched yet makes its answer wait
     in pending.json for the next `--record`, once; whatever cannot be handed over (no id, never fetched, a wrong type, too large, a refusal
-    of the server) travels as `own_error`, so the server says it on that line. Returns (the answers to send, the ids still to fetch)."""
+    of the server) travels as `own_error`, so the server says it on that line. Returns (the answers to send, the ids still to fetch).
+    VW-25 issue 10 (25 Nov 2026): `own` is a list of up to three pictures of one thing; each is fetched and handed over, and the answer
+    carries `own_refs`, their ids on the server in the order given. One that cannot be handed over is named in `own_error`; the others
+    are handed over all the same, so they stay with the server. The older page's one picture (`own`: one object) is a list of one;
+    the older answer field `own_ref` is retired here (the server still reads it from an older tool)."""
     own_dir = folder / 'own'
     waited = load_json(own_dir / 'pending.json', [])
     new = {a['key'] for a in answers}
@@ -2056,26 +2057,24 @@ def page_own(folder, base, answers):
         if a.get('choice') != 'own':
             out.append(a)
             continue
-        ident = str((own or {}).get('id') or '') if isinstance(own, dict) else ''
-        error = ''
-        if not re.fullmatch(r'[0-9a-f]{32}', ident):   # an id names a file here
-            error = 'the page gave no picture with this answer'
-        else:
-            files = sorted(own_dir.glob(ident + '.*'))
-            if not files and not again:
-                wait.append({**a, 'own': own, 'permission': words})
-                fetch.append(ident)
-                continue
+        pics = [p for p in (own if isinstance(own, list) else [own]) if isinstance(p, dict) and re.fullmatch(r'[0-9a-f]{32}', str(p.get('id') or ''))]   # an id names a file here
+        found = {p['id']: sorted(own_dir.glob(p['id'] + '.*')) for p in pics}
+        if not again and not all(found.values()):   # the whole answer waits once for the pictures not fetched yet
+            wait.append({**a, 'own': own, 'permission': words})
+            fetch += [i for i, files in found.items() if not files and i not in fetch]
+            continue
+        eid, refs, errors, asked, mine = str(a.get('key') or '').split(':', 1)[-1], [], [], not words, {}
+        for p in pics:
+            files, name, error = found[p['id']], str(p.get('name') or '')[:80], ''
             if not files:
                 error = 'the picture could not be fetched from the page'
             elif files[0].suffix.lower() not in OWN_TYPES:
                 error = 'the file is not a PNG, JPEG or WebP picture'
             elif files[0].stat().st_size > OWN_PICTURE_MAX:
                 error = 'the picture is larger than 15 MB: choose a smaller file'
-            else:   # ponytail: handed over before the line is recorded; a crash between the two leaves one more approved picture of the thing, as a second `vw visuals own` would
-                eid = str(a.get('key') or '').split(':', 1)[-1]
-                calls = ([('/likeness', {'element_id': eid, 'quote': words, 'stand_in': False})] if words else []) + [
-                    ('/own', {'element_id': eid, 'content_base64': base64.b64encode(files[0].read_bytes()).decode('ascii'), 'url': '', 'name': str((own or {}).get('name') or '')[:80]})]
+            else:   # ponytail: handed over before the line is recorded; a crash between the two leaves the pictures approved for the thing, as `vw visuals own` would; given again they are taken once
+                calls = ([] if asked else [('/likeness', {'element_id': eid, 'quote': words, 'stand_in': False})]) + [
+                    ('/own', {'element_id': eid, 'content_base64': base64.b64encode(files[0].read_bytes()).decode('ascii'), 'url': '', 'name': name})]
                 for path, body in calls:
                     payload, code = request('POST', base + path, json={'request_id': str(uuid.uuid4()), **body})
                     if code == 401:
@@ -2083,10 +2082,20 @@ def page_own(folder, base, answers):
                     if code:
                         error = str((payload or {}).get('message') or 'the server did not take the picture')[:500]
                         break
+                    asked = True   # a person's permission is recorded once, before the first picture
                     if path == '/own':
-                        a['own_ref'] = str(payload.get('id') or '')
-        if error:
-            a['own_error'] = error
+                        refs.append(str(payload.get('id') or ''))
+                        mine[p['id']] = refs[-1]
+            if error:
+                errors.append(f'{name}: {error}' if len(pics) > 1 and name else error)   # one of several is named
+        if not pics:
+            errors.append('the page gave no picture with this answer')
+        if refs:
+            a['own_refs'] = refs
+        if isinstance(a.get('marks'), dict):   # Minor corrections on the operator's own picture: the page names a mark by the picture's id in its file store; the server by its own
+            a['marks'] = {mine[k]: v for k, v in a['marks'].items() if k in mine}
+        if errors:
+            a['own_error'] = '; '.join(errors)[:600]   # the server's limit of the field
         out.append(a)
     if wait:
         own_dir.mkdir(parents=True, exist_ok=True)
@@ -2223,8 +2232,8 @@ VISUALS_FLAGS = {
     'prepare': set(), 'budget': set(), 'cap': {'inr', 'quote'}, 'elements': set(), 'feedback': set(), 'check': {'file'}, 'propose': {'file', 'answers'}, 'plan': set(), 'treatment': {'file', 'quote', 'accept', 'send_back', 'notes'}, 'plan-join': {'base', 'gaps', 'rebuild'},
     'select': {'gap', 'choice', 'job', 'notes', 'timing', 'quote', 'in_s'}, 'accept': {'gaps', 'quote'}, 'next': {'one'}, 'decide': {'item', 'choice', 'quote', 'notes', 'one'}, 'card': {'file', 'one'}, 'page': {'url', 'record', 'uploaded', 'pictures_again'}, 'revise': {'gap', 'notes', 'quote'}, 'record': {'gap', 'gaps', 'quote'},
     'round': {'file', 'verdicts', 'picks', 'sets', 'quote', 'undo', 'answer', 'verdict', 'golden', 'words', 'make', 'aside', 'back', 'rest', 'rewrite', 'looks', 'things'},   # design/177: the page's step-2 actions; design/211 part B: the second go, the rewrite, the looks at the sets
-    'search': {'element', 'keywords', 'quote', 'source'}, 'ask': {'item', 'question', 'choices', 'cost'}, 'answer': {'item', 'answer'}, 'not-this': {'element'}, 'pick': {'search', 'n', 'note', 'quote'}, 'nothing-fits': {'search', 'reason'},
-    'frame': _PLACE, 'supply': _PLACE, 'web': _PLACE, 'own': {'element', 'file', 'url', 'name'},   # design/177
+    'search': {'element', 'keywords', 'quote', 'source'}, 'ask': {'item', 'question', 'choices', 'cost', 'keeps'}, 'answer': {'item', 'answer'}, 'not-this': {'element'}, 'pick': {'search', 'n', 'note', 'quote'}, 'nothing-fits': {'search', 'reason'},
+    'frame': _PLACE, 'supply': _PLACE, 'web': _PLACE, 'own': {'element', 'file', 'url', 'name', 'words'},   # design/177; VW-25 issue 11: --words
     'image': {'file', 'element', 'name', 'kind', 'prompt', 'parents', 'size', 'quality', 'answer', 'variants', 'end_answer', 'shot', 'subject', 'role', 'golden', 'region', 'end_region'},   # design/111 F11
     'approve': {'file', 'ref', 'sha', 'quote', 'again'}, 'reject': {'ref', 'notes', 'quote'}, 'fix': {'ref'},
     'bind': {'file', 'shot', 'refs', 'selector', 'quote'}, 'packet': {'shot'}, 'generator': {'shot', 'provider', 'model'},
@@ -2580,7 +2589,7 @@ def cmd_visuals(a):
             return (first + f"{card['step']}: {card['entries']} entries on one card ({card['id']}). Say: \"{card['say_before']}\" Card file: {card['card_file']}. "
                     f"Write the answers to: {card['answers_path']}. Then: vw visuals card --file {card['answers_file']}. " + out['how'])
         group = out.get('group')
-        if group:   # release 2, B4 and B4b: several end-frames, or layout drawings, ready together: one message, one question for each
+        if group:   # release 2, B4 and B4b: several end-frames ready together: one message, one question for each (until 25 Nov 2026 also layout drawings; retired)
             (ws / 'work' / 'chat').mkdir(parents=True, exist_ok=True)
             for e in group['items']:
                 e['show_files'] = [_download(m, f['key'], f"work/chat/{re.sub(r'[^A-Za-z0-9._-]', '-', f['name'])}") for f in e.get('show') or []]
@@ -2754,8 +2763,11 @@ def cmd_visuals(a):
                 d = d.get('data') if isinstance(d, dict) and isinstance(d.get('data'), dict) else d
                 if isinstance(d, dict) and d.get('key') and d.get('choice'):
                     answers.append({'line': f.stem[:20], 'key': str(d['key'])[:120], 'item': str(d.get('item') or '')[:200], 'choice': str(d['choice'])[:120], 'notes': str(d.get('notes') or '')[:2000],
-                                    **({'own': d['own']} if isinstance(d.get('own'), dict) else {}), **({'permission': str(d['permission'])[:300]} if d.get('permission') else {}),
-                                    **({'pics': {str(k)[:80]: str(v)[:8] for k, v in list(d['pics'].items())[:8]}} if isinstance(d.get('pics'), dict) and d['pics'] else {})})   # design/211: a picture answered on its own
+                                    **({'own': d['own']} if isinstance(d.get('own'), (dict, list)) else {}), **({'permission': str(d['permission'])[:300]} if d.get('permission') else {}),
+                                    **({'pics': {str(k)[:80]: str(v)[:8] for k, v in list(d['pics'].items())[:8]}} if isinstance(d.get('pics'), dict) and d['pics'] else {}),   # design/211: a picture answered on its own
+                                    # Minor corrections as an edit: the operator's marks per picture and the tick go to the server as the page saved them; the server checks them
+                                    **({'marks': {str(k)[:80]: [m for m in v[:3] if isinstance(m, dict)] for k, v in list(d['marks'].items())[:8] if isinstance(v, list)}} if isinstance(d.get('marks'), dict) and d['marks'] else {}),
+                                    **({'every': d['every']} if isinstance(d.get('every'), bool) else {}), **({'fix': True} if d.get('fix') is True else {})})
             answers, own_fetch = page_own(folder, base, answers)   # design/210 part 2: the operator's own pictures reach the server before their lines are recorded
             out = write(base + '/page/record', {'answers': answers}, wait=PAGE_WAIT)
             taken = folder / 'answers' / 'rounds' / rnd / 'answers'
@@ -2850,7 +2862,7 @@ def cmd_visuals(a):
         emit(out, 0, ' '.join([*(out.get('refused') or {}).values(), out.get('then') or '']))   # a refused thing is the server's sentence; the others were recorded
     if a.what == 'ask':   # design/110 rule 0: the question is a server state on the item
         choices = [c.strip() for c in str(a.choices or '').split('|') if c.strip()]
-        out = write(base + '/ask', {'item': a.item, 'question': a.question or '', 'choices': choices, 'cost_inr': float(a.cost) if a.cost else None})
+        out = write(base + '/ask', {'item': a.item, 'question': a.question or '', 'choices': choices, 'cost_inr': float(a.cost) if a.cost else None, **({'keeps': a.keeps.strip()} if a.keeps else {})})   # release 1 of 27 Nov 2026, part F
         emit(out, 0, out.get('next') or 'Question recorded.')
     if a.what == 'answer':
         out = write(base + '/answer', {'item': a.item, 'answer': a.answer or ''})
@@ -2905,8 +2917,25 @@ def cmd_visuals(a):
         if getattr(a, 'things', None):   # design/216b: Claude's list of the things shown in each place; a place that waited for it is ordered then
             out = write(base + '/round/things', {'rows': _rows(m, a.things, ('element_id', 'things', 'reason'))})
             emit(out, 0, out.get('then'))
-        if getattr(a, 'rewrite', None):   # the requests the operator sent back, rewritten: the sets are made then
-            out = write(base + '/round/rewrite', {'rows': _rows(m, a.rewrite, ('element_id', 'prompt'))})
+        if getattr(a, 'rewrite', None) is True:   # Minor corrections as an edit: the sets that wait for Claude's where line (or its rewrite), with their pictures, marked where the operator marked them
+            out = call('GET', base + '/round/rewrite')
+            for s in out.get('sets') or []:
+                folder = 'work/visuals/sets/' + re.sub(r'[^A-Za-z0-9._-]', '-', str(s.get('element_id')))
+                for pic in s.get('pictures') or []:
+                    if pic.get('key'):
+                        pic['file'] = f"{folder}/correct-{pic.get('n')}{'.png' if pic['key'].endswith('.png') else '.jpg'}"
+                        _download(m, pic['key'], pic['file'])
+            (ws / 'work' / 'visuals' / 'sets').mkdir(parents=True, exist_ok=True)
+            (ws / 'work' / 'visuals' / 'sets' / 'rewrites.json').write_text(json.dumps(out, indent=1, ensure_ascii=False) + '\n', encoding='utf-8')
+            emit({'file': 'work/visuals/sets/rewrites.json', 'sets': [s.get('element_id') for s in out.get('sets') or []], 'then': out.get('then')}, 0,
+                 'Read work/visuals/sets/rewrites.json: `how` says how a where line is written; look at each picture file. Then write out/round-rewrites.json '
+                 'and send it: `vw visuals round --rewrite out/round-rewrites.json`.')
+        if getattr(a, 'rewrite', None):   # Claude's where lines (Minor corrections) and the requests written again (Make again): the sets are corrected or made then
+            rows = _rows(m, a.rewrite, ('element_id',))
+            if not all(r.get('prompt') or r.get('where') or r.get('unclear') for r in rows):
+                emit({'action': 'refused', 'message': f'{a.rewrite} must be a list of {{element_id, prompt}} rows (a set to make again) or {{element_id, where}} rows (a set to correct; '
+                                                      '`unclear` in place of `where` asks the operator one question).'}, 2)
+            out = write(base + '/round/rewrite', {'rows': rows})
             emit(out, 0, out.get('then'))
         if any(getattr(a, k, None) for k in ROUND_ONE + ('verdict', 'golden', 'words')):
             _round_one(a, base)
@@ -3047,7 +3076,10 @@ def cmd_visuals(a):
             if path.stat().st_size > OWN_PICTURE_MAX:
                 emit({'action': 'refused', 'message': 'The picture is larger than 15 MB: choose a smaller file.'}, 2)
             content = __import__('base64').b64encode(path.read_bytes()).decode()
-        out = write(base + '/own', {'element_id': a.element, 'content_base64': content, 'url': url, 'name': a.name or ''})
+        words = ' '.join(str(getattr(a, 'words', None) or '').split())   # VW-25 issue 11: what the operator said about the picture, in their words: the server uses it as the page's comment box is used
+        if len(words) > 300:
+            emit({'action': 'refused', 'message': f'The words with the picture are {len(words)} characters long: 300 characters at most. Shorten them with the operator; nothing was sent.'}, 2)
+        out = write(base + '/own', {'element_id': a.element, 'content_base64': content, 'url': url, 'name': a.name or '', **({'words': words} if words else {})})
         emit(out, 0, (out.get('next') or f'Your picture is saved and approved for {a.element}.')
              + f" It is picture {out.get('id')}: to start every shot of {a.element} from it, `vw visuals round --answer {a.element} --verdict yes --golden {out.get('id')}` at step 2.")
     if a.what == 'approve' and getattr(a, 'again', False):   # design/177: a rejected picture approved after all, until a later step used it
@@ -3196,7 +3228,7 @@ def cmd_visuals(a):
         on_page = 'answered on the page in one visit (`vw visuals page`): the sizes, materials and graphic specs, and the reference sets'
         waiting_line = (f"; {len(wt)} waiting for the operator: " + (f'all {on_page}' if paged == len(wt) else (f'{paged} of them are {on_page}; ' if paged else '')
                         + f"ask {'the others' if paged else 'them'} one at a time with `vw visuals next` (design/188), never from this list")) if wt else ''
-        due_line = f"; {st['round_due']}" if st.get('round_due') else ''   # design/151 hotfix: a kept film's round is next, said before the waiting specs
+        due_line = (f"; {st['answers_due']}" if st.get('answers_due') else '') + (f"; {st['round_due']}" if st.get('round_due') else '')   # release 1 of 27 Nov 2026, part F: an answer not applied, said first   # design/151 hotfix: a kept film's round is next, said before the waiting specs
         six = (f"; step 6 (say this to the operator each time it changes, as it is, and ask nothing with it): {st['step6']}" if st.get('step6') else '')   # design/221 row 18
         early = republish_now(ws)   # fix set (c): said while things are being made, long before the page is wanted
         emit({**_short_status(st, a.shot, a.gap), **early[0]}, 0, early[1] + 'Visuals: ' + line + round_line + due_line + waiting_line + six + '; one line per job above, the whole status in work/visuals/status.json')
@@ -3242,9 +3274,21 @@ def cmd_visuals(a):
         out = write(base + '/unplace', {'shot_id': a.shot, 'quote': a.quote or ''})
         emit(out, 0, out.get('next') or f"Took {out.get('removed')} out of {out.get('shot_id')}; it stays approved.")
     if a.what == 'clip':   # design/89 B3: a moving stretch of a clip fills the shot, from --at for the shot's length
+        if a.shot and getattr(a, 'propose', None):   # release 1 of 27 Nov 2026, phase 4 part E: the assistant's stretches for a footage shot; the server asks the operator on a card
+            rows = []
+            for part in [p.strip() for p in a.propose.split(',') if p.strip()]:
+                clip, _, at = part.rpartition('@')
+                if not clip:
+                    emit({'action': 'refused', 'message': 'Each stretch is `<clip>@<seconds>`, for example `--propose "C0051.MP4@12.5, C0052.MP4@3"` (one to three).'}, 2)
+                rows.append({'clip': clip.strip(), 'at_s': _number(at.strip(), '--propose')})
+            out = write(base + '/clip', {'shot_id': a.shot, 'propose': rows})
+            emit(out, 0, f"{len(rows)} stretch(es) proposed for shot {a.shot}. {out.get('next', '')}")
         if not a.shot or not a.clip or a.at is None:
             emit({'action': 'refused', 'message': 'Give the shot, the clip and where the stretch starts: `vw visuals clip --shot S --clip C --at <seconds> --quote "<their words>"`.'}, 2)
-        out = write(base + '/clip', {'shot_id': a.shot, 'clip_id': a.clip, 'in_s': _number(a.at, '--at'), 'quote': a.quote, **_reuse_fields(a)})
+        at = _number(a.at, '--at')   # a bad number is refused first (W11)
+        if not str(a.quote or '').strip():
+            emit({'action': 'refused', 'message': "Give the operator's own words (--quote)."}, 2)
+        out = write(base + '/clip', {'shot_id': a.shot, 'clip_id': a.clip, 'in_s': at, 'quote': a.quote, **_reuse_fields(a)})
         emit(out, 0, f"Shot {a.shot} filled with clip {a.clip} from {out['in_s']} s to {out['out_s']} s.")
     if a.what == 'reuse':   # design/207 (D2): retired by name (the older way, design/89 H7: the operator approved a proposed reuse with their words)
         emit({'action': 'refused', 'message': "vw visuals reuse is retired: a reuse no longer needs the operator's approval. Place the shot again with the reason and the reimagined shot "
@@ -4070,13 +4114,13 @@ def cmd_film(a):
     if getattr(a, 'sample', False):   # design/218: the picture of the offered fonts, shown before the font question; never blocks it
         out = call('GET', f"/api/runs/{m['run_id']}/film/font-sample", wait=120)
         if not out.get('base64'):
-            emit({k: v for k, v in out.items() if k != 'reason'}, 0, out.get('message') + (' Say this line to the operator, then ask the font question as before.' if out.get('asked') else ''))
+            emit({k: v for k, v in out.items() if k != 'reason'}, 0, out.get('message') + (" Say this line to the operator. The font is asked by the server's card (`vw visuals next`): show that card. Other fonts are not available." if out.get('asked') else ''))   # release 1 of 27 Nov 2026, phase 3 part A
         import base64 as _b64
         path = workspace(m['code']) / 'work' / 'chat' / 'font-sample.png'
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(_b64.b64decode(out.pop('base64')))
-        emit({**out, 'show_files': [str(path)]}, 0, f"File to show: {path}. Show it to the operator first, then ask the font question as before, the card's fonts as the "
-                                                   f"picture heads them ({', '.join(out.get('on_card') or out.get('fonts') or [])}) and Other, the first to recommend; any font of the picture may be named.")
+        emit({**out, 'show_files': [str(path)]}, 0, f"File to show: {path}. It shows the fonts of this film ({', '.join(out.get('on_card') or out.get('fonts') or [])}). "
+                                                   "The font is asked by the server's card (`vw visuals next`): show that card. Other fonts are not available.")   # release 1 of 27 Nov 2026, phase 3 part A: no question of the assistant's own, no "Other"
     if not a.value:
         emit(call('GET', f"/api/runs/{m['run_id']}/film"))
         return
@@ -4197,11 +4241,11 @@ def build_parser():
     s.add_argument('--exclude', action='append'); s.add_argument('--again', action='store_true'); s.add_argument('--duplicates', choices=['keep', 'skip'], help="start: the operator's one answer on clips the client's library already holds (design/147)"); s.add_argument('--unit'); s.add_argument('--note'); s.add_argument('--show-speaker-video', action='store_const', const=True, default=None); s.add_argument('--waive', action='append'); s.set_defaults(fn=cmd_analysis)
     s = sub.add_parser('planning'); s.add_argument('rest', nargs=argparse.REMAINDER); s.set_defaults(fn=lambda a: retired('planning'))   # design/35 row 2: version 1 retired
     s = sub.add_parser('visuals'); s.add_argument('what', choices=VISUALS_WHAT)
-    for flag in ('--inr', '--file', '--gap', '--choice', '--quote', '--element', '--name', '--clip', '--at', '--url', '--kind', '--prompt', '--parents', '--size', '--quality', '--ref', '--sha', '--shot', '--provider', '--model', '--start', '--end', '--motion', '--continuity', '--seconds', '--job', '--decision', '--notes', '--timing', '--answer', '--variants', '--end-answer', '--camera', '--support', '--look', '--reuse', '--considered', '--crop', '--question',
-                 '--keywords', '--search', '--n', '--reason', '--verdicts', '--picks', '--sets', '--move', '--role', '--item', '--choices', '--cost', '--source', '--accept', '--send-back', '--base', '--verdict', '--words', '--make', '--aside', '--back', '--made', '--in-s', '--uploaded', '--answers'):   # design/177: round's step-2 actions   # design/124 Changes 6, 9   # design/73, design/79; design/94 --move; design/106 --role; design/110; design/121 --source
+    for flag in ('--inr', '--file', '--gap', '--choice', '--quote', '--element', '--name', '--clip', '--at', '--propose', '--url', '--kind', '--prompt', '--parents', '--size', '--quality', '--ref', '--sha', '--shot', '--provider', '--model', '--start', '--end', '--motion', '--continuity', '--seconds', '--job', '--decision', '--notes', '--timing', '--answer', '--variants', '--end-answer', '--camera', '--support', '--look', '--reuse', '--considered', '--crop', '--question',
+                 '--keywords', '--search', '--n', '--reason', '--verdicts', '--picks', '--sets', '--move', '--role', '--item', '--choices', '--cost', '--keeps', '--source', '--accept', '--send-back', '--base', '--verdict', '--words', '--make', '--aside', '--back', '--made', '--in-s', '--uploaded', '--answers'):   # design/177: round's step-2 actions   # design/124 Changes 6, 9   # design/73, design/79; design/94 --move; design/106 --role; design/110; design/121 --source
         s.add_argument(flag)
     s.add_argument('--undo', action='store_true', help='round: undo Done until the next step used it (design/110 rule 0)')
-    s.add_argument('--rest', action='store_true', help="round: make the other sets, on the operator's word (design/211)"); s.add_argument('--rewrite', help='round: the file of the rewritten requests, rows {element_id, prompt} (design/211)')
+    s.add_argument('--rest', action='store_true', help="round: make the other sets, on the operator's word (design/211)"); s.add_argument('--rewrite', nargs='?', const=True, default=None, help='round: alone, list the sets that wait for a where line or a rewrite and fetch their pictures; with a file, send the rows {element_id, where} (Minor corrections) or {element_id, prompt} (Make again)')
     s.add_argument('--looks', nargs='?', const=True, default=None, help='round: alone, list the sets to look at and fetch their pictures; with a file, record the looks (design/211)')
     s.add_argument('--stand-in', dest='stand_in', action='store_true', help='likeness: the person is a stand-in again, made from the description (design/207)')
     s.add_argument('--record', action='store_true', help='page: record the answers the operator gave on the artifact page (design/204)')
