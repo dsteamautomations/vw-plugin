@@ -194,8 +194,8 @@ def intake_record(ws, procedure, prior, title=None, client=''):
         if not original.is_file() or hashlib.sha256(original.read_bytes()).hexdigest() != src['sha256']:
             raise Refused(f"The source file {src['file']} changed or is missing since prepare; run `vw stage intake prepare` again.")
     titles = data.get('titles')
-    if not isinstance(titles, list) or not titles or not all(isinstance(t, str) and t.strip() for t in titles):  # design/34 1.4
-        raise Refused('out/intake.json: `titles` must list at least one non-empty title (recommended first).')
+    if not isinstance(titles, list) or not all(isinstance(t, str) and t.strip() for t in titles):  # design/34 1.4; an empty list is allowed (27 Nov 2026): the instruction asks for none when the document is unclear
+        raise Refused('out/intake.json: `titles` must be a list of non-empty titles (recommended first; empty when the document is too unclear to name).')
     titles = [t.strip() for t in titles]
     chosen = (title or '').strip()
     if not chosen:  # design/34 1.2: the operator chooses; the tool never picks for them
@@ -484,6 +484,21 @@ def apply_changes(source, changes, spoken_text):
     return working, expected
 
 
+PASSAGE_LIMIT = 1200   # ponytail: characters of one paragraph (about 200 words, well over a minute of speech); a guess, tune on real scripts
+
+
+def passage_note(text):
+    """Sweep of 27 Nov 2026 (script finding 1): a beat is one paragraph and a paragraph ends at a blank line, so a script with no blank lines (a
+    text file with a sentence on each line, a PDF page read as one block) became one beat and nothing said so. None when no paragraph is too long."""
+    sizes = [len(t) for t in paragraphs(text).values()]
+    long = [n for n in sizes if n > PASSAGE_LIMIT]
+    if not long:
+        return None
+    return (f"{len(long)} of the script's {len(sizes)} paragraphs {'is' if len(long) == 1 else 'are'} longer than {PASSAGE_LIMIT:,} characters (the longest: {max(long):,}). "
+            'A beat is one paragraph, and a paragraph ends at a blank line: in spoken_text, put a blank line where each new idea starts. '
+            'Line breaks are not wording, so this needs no listed change; say it to the operator in one line.')
+
+
 def directory_for_script(card):
     """design/50 D: the only directory facts the script pass may use: CTA instructions, the contact details for an ending that wants one, and trademark patterns."""
     out = {}
@@ -506,7 +521,7 @@ def script_prepare(ws, procedure, prior):
             'answers': brief['summary'].get('answers') or {}, 'narration_language': production.get('narration_language'),   # design/38 3.4
             'brand_and_safety_rules': production.get('brand_and_safety_rules') or [], 'chapters': production.get('process_stages') or [],
             'directory': directory_for_script(brief['summary'].get('client_card') or {})},   # design/50 D
-            'prepared_at': stamp(ws, 'script'),
+            'prepared_at': stamp(ws, 'script'), **({'passage_note': passage_note(cleaned_script(ws, intake))} if passage_note(cleaned_script(ws, intake)) else {}),
             'output_file': 'out/script.json', 'output_shape': procedure['output_shape'], 'steps': procedure['steps']}
 
 
@@ -538,6 +553,7 @@ def script_record(ws, procedure, prior):
     summary = {'content_digest': data['content_digest'], 'passages': len(passages), 'beats': len(beats), 'characters': len(text),
                **({'length_warning': f'The script has {len(text):,} characters; it will be narrated in about {-(-len(text) // V4_REQUEST_LIMIT)} requests and joined '
                                      '(Eleven v4 takes at most 10,000 per request).'} if len(text) > V4_REQUEST_LIMIT else {}),
+               **({'passage_warning': passage_note(text)} if passage_note(text) else {}),
                'source_intake': intake['summary']['source_digest'], 'source_brief': brief['summary']['content_digest'],
                'assessment': data.get('assessment', ''), 'claims': claims, 'changes': accepted, 'changes_proposed': len(changes), 'changes_accepted': accepted,
                'changes_rejected': sum(1 for c in changes if c.get('decision') == 'rejected'), **stamps(ws, 'script')}   # design/38 3.2
